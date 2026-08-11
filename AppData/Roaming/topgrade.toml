@@ -1,0 +1,30 @@
+# sophon (Windows 11). Companion to the macOS config in jcouball/dotfiles.
+#
+# Same principle as the Mac: topgrade manages the system and core tools, never
+# the dependencies of individual software projects. That prevents a global
+# update from breaking a project pinned to a specific version.
+#
+# The Mac config lists brew_formula / brew_cask / mas / asdf. None of those
+# steps exist here, and because `only` is an allowlist, copying it over would
+# silently exclude winget -- topgrade would run, look busy, and update nothing.
+
+[misc]
+only = [
+    "winget",                 # applications and core CLI tools (layer 2)
+    "system",                 # Windows Update
+    "shell",                  # PowerShell modules
+    "vscode",                 # editor extensions
+    "chezmoi",                # pull sophon-config and re-apply
+    "github_cli_extensions",
+]
+
+# Deliberately NOT in the list:
+#
+#   mise  -- layer 3. Every tool in ~/.config/mise/config.toml is pinned to an
+#            exact version, and the JRuby build depends on java 21 and ant
+#            1.10.15 specifically. Runtimes move when you decide they move, not
+#            as a side effect of a weekly sweep. (The Mac lists `asdf` because
+#            there it upgrades plugins rather than tool versions.)
+#
+#   cargo, npm, pip -- layer 4. Subordinate to whatever runtime mise installed;
+#            sweeping them independently can break that pairing.

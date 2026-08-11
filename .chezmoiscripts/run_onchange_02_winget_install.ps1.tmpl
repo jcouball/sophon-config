@@ -1,0 +1,24 @@
+# Install everything in the winget manifest (layer 2: apps and core CLI tools).
+#
+# Re-runs only when winget-packages.json changes -- the hash below is what makes
+# that work. Regenerate the manifest after installing anything new:
+#
+#   winget export -o (chezmoi source-path)\winget-packages.json
+#
+# manifest hash: {{ include "winget-packages.json" | sha256sum }}
+
+$manifest = Join-Path '{{ .chezmoi.sourceDir }}' 'winget-packages.json'
+
+if (-not (Test-Path $manifest)) {
+    Write-Warning "winget manifest not found at $manifest"
+    return
+}
+
+Write-Host "Importing packages from $manifest ..."
+
+# --ignore-unavailable matters: publishers drop old manifests, and without it a
+# single missing package aborts the entire import.
+winget import --import-file $manifest `
+    --ignore-unavailable `
+    --accept-package-agreements `
+    --accept-source-agreements

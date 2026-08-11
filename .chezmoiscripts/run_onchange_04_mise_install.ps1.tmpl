@@ -1,0 +1,18 @@
+# Materialise the tools pinned in mise's config.
+#
+# The config file itself is managed by chezmoi (dot_config/mise/config.toml), but
+# applying it only writes the declaration -- the runtimes still have to be
+# downloaded. This re-runs whenever that file changes, and no other time.
+#
+# config.toml hash: {{ include ".config/mise/config.toml" | sha256sum }}
+
+if (-not (Get-Command mise -ErrorAction SilentlyContinue)) {
+    Write-Warning 'mise is not on PATH - run the winget provisioning script first, then reopen the shell.'
+    return
+}
+
+Write-Host 'Installing pinned tools from ~/.config/mise/config.toml ...'
+mise install
+
+Write-Host ''
+mise ls --current
