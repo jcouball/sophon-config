@@ -1,0 +1,4 @@
+# Source-only data. Read by run_onchange_02 via `include`, but must never be
+# applied to the home directory -- anything in the source root otherwise becomes
+# a target file (~/winget-packages.json).
+winget-packages.json

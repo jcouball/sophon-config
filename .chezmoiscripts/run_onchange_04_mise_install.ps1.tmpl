@@ -4,7 +4,9 @@
 # applying it only writes the declaration -- the runtimes still have to be
 # downloaded. This re-runs whenever that file changes, and no other time.
 #
-# config.toml hash: {{ include ".config/mise/config.toml" | sha256sum }}
+# NOTE: include resolves against the SOURCE directory, so this is the source
+# name (dot_config/...), not the target name (.config/...).
+# config.toml hash: {{ include "dot_config/mise/config.toml" | sha256sum }}
 
 if (-not (Get-Command mise -ErrorAction SilentlyContinue)) {
     Write-Warning 'mise is not on PATH - run the winget provisioning script first, then reopen the shell.'
