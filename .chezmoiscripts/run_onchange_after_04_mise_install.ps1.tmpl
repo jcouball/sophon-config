@@ -4,6 +4,13 @@
 # applying it only writes the declaration -- the runtimes still have to be
 # downloaded. This re-runs whenever that file changes, and no other time.
 #
+# THE `after_` ATTRIBUTE IS REQUIRED, not stylistic. Targets are applied in
+# lexicographic order and ".chezmoiscripts/" sorts before ".config/" (.ch < .co),
+# so by default this runs BEFORE the config file it depends on exists. mise then
+# reads no config, has nothing to install, and cheerfully reports "all tools are
+# installed". Verified on a clean VM: the run looked entirely successful and
+# every single runtime was missing.
+#
 # NOTE: include resolves against the SOURCE directory, so this is the source
 # name (dot_config/...), not the target name (.config/...).
 # config.toml hash: {{ include "dot_config/mise/config.toml" | sha256sum }}

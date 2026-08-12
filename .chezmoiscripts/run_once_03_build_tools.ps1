@@ -34,7 +34,12 @@ Write-Host 'Adding the workload explicitly (several GB, no progress bar)...'
 # `winget install` against an installed package answers "no available upgrade"
 # and silently skips the --override, leaving the workload missing and rust
 # failing at link time much later. --force reruns the installer so --add applies.
+# --source winget is REQUIRED. A fresh Windows image's msstore source fails its
+# certificate check (0x8a15005e), and winget then refuses to auto-select a
+# source -- so this call died with "Failed when searching source: msstore" and
+# the workload never installed. Verified on a clean VM.
 winget install --id Microsoft.VisualStudio.2022.BuildTools --exact --force `
+    --source winget `
     --accept-package-agreements --accept-source-agreements `
     --override '--wait --quiet --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended'
 
