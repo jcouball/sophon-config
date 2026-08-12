@@ -8,8 +8,17 @@
 # name (dot_config/...), not the target name (.config/...).
 # config.toml hash: {{ include "dot_config/mise/config.toml" | sha256sum }}
 
+# Refresh PATH from the registry first. mise is installed by script 01 in this
+# same chezmoi run, and winget adds its directory to the *user* PATH -- but this
+# process inherited its environment before that happened, and Windows never
+# propagates PATH changes into a running process. Without this, a fresh machine
+# fails here: mise "not found", the script returns cleanly, and none of the
+# pinned runtimes ever install.
+$env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
+            [Environment]::GetEnvironmentVariable('Path', 'User')
+
 if (-not (Get-Command mise -ErrorAction SilentlyContinue)) {
-    Write-Warning 'mise is not on PATH - run the winget provisioning script first, then reopen the shell.'
+    Write-Warning 'mise is not on PATH even after refreshing it - check that script 01 installed jdx.mise.'
     return
 }
 

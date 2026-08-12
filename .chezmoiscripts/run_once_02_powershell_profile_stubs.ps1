@@ -14,6 +14,13 @@
 #
 # Runs AFTER the winget script, because pwsh 7 arrives from the manifest.
 
+# Refresh PATH from the registry. pwsh 7 is installed by script 01 in this same
+# run, and this process inherited its environment beforehand -- Windows does not
+# propagate PATH into running processes. Without this, pwsh looks absent on a
+# fresh machine and only the 5.1 stub gets written.
+$env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
+            [Environment]::GetEnvironmentVariable('Path', 'User')
+
 function Get-ProfilePath([string]$exe) {
     $cmd = Get-Command $exe -ErrorAction SilentlyContinue
     if (-not $cmd) { return $null }
