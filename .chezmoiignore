@@ -1,4 +1,7 @@
-# Source-only data. Read by run_onchange_02 via `include`, but must never be
-# applied to the home directory -- anything in the source root otherwise becomes
-# a target file (~/winget-packages.json).
+# Source-only files. Anything in the source root that does not begin with a dot
+# otherwise becomes a target and gets written to the home directory.
+#
+# winget-packages.json is read by run_onchange_01 via `include`; .chezmoiignore
+# only affects what is applied, not what templates can read.
 winget-packages.json
+README.md
