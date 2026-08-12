@@ -1,9 +1,21 @@
 # Install everything in the winget manifest (layer 2: apps and core CLI tools).
 #
 # Re-runs only when winget-packages.json changes -- the hash below is what makes
-# that work. Regenerate the manifest after installing anything new:
+# that work. Regenerate the manifest after installing anything new, and strip the
+# deliberately excluded packages, which `winget export` will keep re-adding:
 #
-#   winget export -o (chezmoi source-path)\winget-packages.json
+#   $f = (chezmoi source-path) + '\winget-packages.json'
+#   winget export -o $f
+#   $skip = @('Warp.Warp')
+#   $j = Get-Content $f -Raw | ConvertFrom-Json
+#   $j.Sources[0].Packages = @($j.Sources[0].Packages | Where-Object { $_.PackageIdentifier -notin $skip })
+#   $j | ConvertTo-Json -Depth 10 | Set-Content $f -Encoding utf8
+#
+# DELIBERATE EXCLUSIONS
+#   Warp.Warp -- its installer takes an extraordinarily long time, launches a
+#     welcome window mid-run, and was one of the packages that stalled a bulk
+#     upgrade on sophon. Cause unknown. Install it by hand when wanted:
+#     `winget install Warp.Warp`. Revisit if the installer improves.
 #
 # manifest hash: {{ include "winget-packages.json" | sha256sum }}
 
