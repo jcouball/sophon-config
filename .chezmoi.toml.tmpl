@@ -1,0 +1,20 @@
+# chezmoi's own configuration, generated into
+# ~/.config/chezmoi/chezmoi.toml by `chezmoi init`.
+#
+# Windows ships with ExecutionPolicy = Restricted. Without this block, every
+# script in .chezmoiscripts fails on a fresh machine with:
+#
+#   ... cannot be loaded because running scripts is disabled on this system.
+#
+# which takes down the entire provisioning layer -- no packages, no profile
+# stubs, no runtimes. Telling the machine to relax its policy would work, but it
+# is a manual step before the bootstrap and a permanent change to the host. This
+# scopes the bypass to chezmoi's own scripts instead, so the rebuild stays two
+# commands and the machine's policy is left alone.
+#
+# `powershell` rather than `pwsh` deliberately: pwsh 7 arrives from the winget
+# manifest, so it does not exist when the first script runs.
+
+[interpreters.ps1]
+    command = "powershell"
+    args = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"]
