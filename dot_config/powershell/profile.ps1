@@ -1,5 +1,6 @@
 # sophon PowerShell profile
-# Managed by chezmoi (jcouball/sophon-config). Do not edit the OneDrive stubs.
+# Managed by chezmoi (jcouball/sophon-config). This is the real profile; the
+# files at $PROFILE are one-line stubs that source it. Edit here, not there.
 
 if (Get-Command mise -ErrorAction SilentlyContinue) {
     # Activation exports JAVA_HOME, ANT_HOME, GOROOT, CARGO_HOME and RUSTUP_HOME
