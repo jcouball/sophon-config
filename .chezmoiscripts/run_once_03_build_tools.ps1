@@ -1,17 +1,18 @@
 # Verify the Visual Studio 2022 Build Tools C++ workload is present.
 #
-# This is a SAFETY NET, not the primary install path. winget 1.29's export does
-# record override arguments -- the manifest carries:
+# THIS IS LOAD-BEARING, not a safety net. Verified on a clean VM.
+#
+# `winget export` does record the override arguments -- the manifest carries:
 #
 #   "InitialOverrideArguments": "--wait --quiet --norestart
 #                                --add Microsoft.VisualStudio.Workload.VCTools
 #                                --includeRecommended"
 #
-# so run_onchange_02's `winget import` should install the workload correctly on a
-# rebuild. This script exists because the failure mode is expensive and silent:
-# Build Tools without the C++ workload looks installed, satisfies the manifest,
-# and only fails when rust reaches the link step with a confusing error. Cheap to
-# check, costly to miss.
+# but `winget import` does NOT apply them. The data survives the round-trip; the
+# effect does not. On a clean rebuild the import installs Build Tools with no C++
+# workload at all, which looks like success: the package is listed, the manifest
+# is satisfied, and nothing complains until rust reaches the link step and fails
+# with an error that points nowhere near the real cause.
 #
 # Needed because rustup defaults to the msvc toolchain, which requires link.exe.
 # node-gyp needs it too, for npm packages with native modules.
@@ -24,10 +25,16 @@ if (Test-Path $vcTools) {
     return
 }
 
-Write-Warning 'Build Tools present but the C++ workload is missing - the manifest override did not take.'
-Write-Host 'Installing the workload explicitly (several GB, no progress bar)...'
+Write-Warning 'Build Tools present but the C++ workload is missing.'
+Write-Host 'Adding the workload explicitly (several GB, no progress bar)...'
 
-winget install --id Microsoft.VisualStudio.2022.BuildTools --exact `
+# --force is REQUIRED here, not defensive. Script 01's `winget import` has
+# already installed the package -- without the workload, because import records
+# InitialOverrideArguments in the manifest but does not apply them. A plain
+# `winget install` against an installed package answers "no available upgrade"
+# and silently skips the --override, leaving the workload missing and rust
+# failing at link time much later. --force reruns the installer so --add applies.
+winget install --id Microsoft.VisualStudio.2022.BuildTools --exact --force `
     --accept-package-agreements --accept-source-agreements `
     --override '--wait --quiet --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended'
 
