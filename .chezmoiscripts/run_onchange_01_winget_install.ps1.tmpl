@@ -16,9 +16,21 @@ if (-not (Test-Path $manifest)) {
 
 Write-Host "Importing packages from $manifest ..."
 
-# --ignore-unavailable matters: publishers drop old manifests, and without it a
-# single missing package aborts the entire import.
+# --ignore-unavailable: publishers drop old manifests, and without it one missing
+#   package aborts the entire import.
+# --no-upgrade: this layer's job is to ensure a package is PRESENT, not current.
+#   Currency belongs to topgrade. Without this, every manifest change re-runs
+#   this script and upgrades all 33 packages as a side effect -- which is exactly
+#   the "global update breaks a pinned project" failure the whole stack avoids.
+# --disable-interactivity: an unattended rebuild must never stop on a prompt.
+#
+# NOTE: `winget import` has no --silent flag (unlike `winget install`), so
+# installers that launch their own UI will do so mid-run -- Warp opens a welcome
+# window. The rebuild is therefore not fully unattended: expect windows to appear
+# and steal focus. Nothing breaks; it just needs a human nearby.
 winget import --import-file $manifest `
     --ignore-unavailable `
+    --no-upgrade `
+    --disable-interactivity `
     --accept-package-agreements `
     --accept-source-agreements
