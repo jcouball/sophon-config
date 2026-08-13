@@ -12,7 +12,8 @@ nothing here needs a conditional.
 | | |
 | --- | --- |
 | Host | sophon — Windows 11 Pro, build 26200 |
-| Shell | PowerShell 7 (`pwsh`) in Warp |
+| Shell | PowerShell 7 (`pwsh`) |
+| Terminal | Windows Terminal (managed) · Warp (by hand) |
 | Package manager | winget 1.29 |
 | Runtimes | mise, 7 tools |
 | WSL | 2.5.10 (Ubuntu 24.04.3, deliberately bare) |
@@ -134,8 +135,24 @@ this machine that isn't in the repo, the system has a hole in it.
 
 ## Which shell
 
-Warp is the **terminal**; `pwsh` is the **shell**. Windows Terminal is installed
-as a fallback and its `defaultProfile` is set by script 05.
+Keep the two ideas separate: the **terminal** is the window, the **shell** is
+what runs in it.
+
+**Windows Terminal is the managed terminal.** It comes from the manifest, and
+script 05 points its `defaultProfile` at pwsh 7 — so a rebuilt machine lands in
+the right shell with no manual step.
+
+**Warp is a personal preference, installed by hand.** It is deliberately
+excluded from the manifest (its installer is extremely slow and opens a welcome
+window mid-provisioning), so a rebuild will not have it. Install it whenever you
+want it, and set its default shell to pwsh in its own settings:
+
+```powershell
+winget install Warp.Warp --source winget
+```
+
+Warp's shell preference cannot be scripted — see
+[Deliberately not managed](#deliberately-not-managed).
 
 | Shell | Use it for |
 | --- | --- |
@@ -164,8 +181,10 @@ what makes the same code correct here and on a machine with no redirection.
 Only needed to recreate this repo from scratch; a rebuild uses the two commands
 at the top.
 
-1. **Install the shell.** `winget install Microsoft.PowerShell`, then set it as
-   the default profile in Warp.
+1. **Install the shell.** `winget install Microsoft.PowerShell --source winget`.
+   No terminal configuration needed yet — Windows Terminal ships with Windows and
+   script 05 sets its default profile later. Warp, if wanted, is a hand install
+   at the end.
 2. **Install chezmoi and gh.**
    `winget install twpayne.chezmoi GitHub.cli --source winget`, then
    `gh auth login`. Neither will be on `PATH` in an already-running process —
