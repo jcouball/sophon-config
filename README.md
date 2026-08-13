@@ -23,25 +23,37 @@ nothing here needs a conditional.
 
 ## Contents
 
-- [Rebuild from nothing](#rebuild-from-nothing)
-- [The governing rule](#the-governing-rule)
-- [The stack](#the-stack)
-- [Which shell](#which-shell)
-- [First-time setup](#first-time-setup)
-- [What's in here](#whats-in-here)
-- [Operating rhythm](#operating-rhythm)
-- [Playbooks](#playbooks)
-- [Ownership decisions](#ownership-decisions)
-- [Native JRuby development](#native-jruby-development)
-- [Certification](#certification)
-- [Secrets](#secrets)
-- [Deliberately not managed](#deliberately-not-managed)
+- **Do something**
+  - [🚨 Rebuild from nothing](#-rebuild-from-nothing)
+  - [Playbooks](#playbooks) — everyday tasks, grouped by the layer that owns them
+  - [Re-certify the rebuild](#re-certify-the-rebuild)
+- **Understand it**
+  - [The governing rule](#the-governing-rule)
+  - [The stack](#the-stack)
+  - [What's in here](#whats-in-here)
+  - [Which shell](#which-shell)
+  - [First-time setup](#first-time-setup) — recreating this repo, not rebuilding the machine
+  - [Operating rhythm](#operating-rhythm)
+- **Why it is the way it is**
+  - [Ownership decisions](#ownership-decisions)
+  - [Native JRuby development](#native-jruby-development)
+  - [Certification](#certification) — eleven defects a clean machine found
+  - [Secrets](#secrets)
+  - [Deliberately not managed](#deliberately-not-managed)
+  - [Notes](#notes)
 
 ---
 
-## Rebuild from nothing
+## Playbooks
 
-Both details are load-bearing and were found the hard way on a clean VM.
+The rule underlying all of them: **the repo must never lag the machine.**
+Whenever you install, remove or re-pin something, the corresponding file goes
+back into the repo in the same sitting.
+
+### 🚨 Rebuild from nothing
+
+**The emergency procedure.** Both details are load-bearing and were found the
+hard way on a clean VM — without them the very first step fails.
 
 ```powershell
 # normal terminal
@@ -55,227 +67,13 @@ chezmoi init --apply jcouball/sophon-config
 ```
 
 This path is **certified** — run end to end on a clean Windows 11 Enterprise
-25H2 VM as a different user. See [Certification](#certification).
+25H2 VM as a different user. See [Certification](#certification) for what that
+found.
+
+Afterwards, by hand: Warp if you want it, and Warp's own settings, which cannot
+be versioned.
 
 ---
-
-## The governing rule
-
-> I use Topgrade to manage overall system and core tools, not the dependencies
-> for individual software projects. This prevents a global update from
-> accidentally breaking a project that depends on specific package versions.
->
-> — from the macOS `topgrade.toml`
-
-**System and core tools** can be swept forward in bulk. **Project runtimes** are
-pinned, and are never upgraded by a command that also upgrades your browser.
-When adding something new, that question decides which layer owns it.
-
-### Why `sophon-config` and not `dotfiles`
-
-"dotfiles" is a Unix idiom. On Windows most of what is managed lives in
-`%APPDATA%` and `%LOCALAPPDATA%` — very little of it is dot-prefixed, so the name
-would misdescribe the contents. `sophon-config` leads with the scope (the
-machine) and stays tool-agnostic, so it survives if chezmoi is ever replaced.
-
----
-
-## The stack
-
-| Layer | Tool | Owns |
-| --- | --- | --- |
-| 0 | git + gh | **Transport.** If a setting exists only on the machine and not here, it is not managed and will be lost. |
-| 1 | **chezmoi** | **Declaration and orchestrator.** Config file contents, and the manifest of what should be installed. Its scripts call the layers below; it installs nothing itself. |
-| 2 | **winget** | **Applications and stable CLI tools.** Git, VS Code, Chrome, 1Password, Docker, `gh`, `jq`, `rg`, chezmoi itself. Driven from `winget-packages.json`. |
-| 3 | **mise** | **All seven runtimes and build tools** — ant, go, java, node, python, ruby, rust. Pinned exactly; never swept. |
-| 4 | npm · uv · gem · cargo | **Libraries and runtime-scoped tools.** `prettier`, `yamllint`, `@github/copilot`. Subordinate to layer 3. |
-| 5 | **topgrade** | **Owns nothing.** Dispatches layers 2 and 4 plus Windows Update, VS Code, gh extensions and chezmoi. |
-| 6 | WSL | **Escape hatch** for POSIX-only tooling — `skopeo`, `redis`, `htop`, GNU autotools. Separate machine, separate management. |
-
-`mise activate pwsh` exports `JAVA_HOME`, `ANT_HOME`, `GOROOT`, `CARGO_HOME` and
-`RUSTUP_HOME` — not just `PATH`. That is what lets it own the JDK, which `mvnw`
-requires. Activation works in Windows PowerShell 5.1 too; only mise's `chpwd`
-hook, and therefore per-directory switching, needs pwsh 7.
-
-### How the layers call each other
-
-```text
-        github.com/jcouball/sophon-config
-                       │
-                       │  chezmoi update
-                       ▼
-                    chezmoi                 renders files, runs scripts
-                       │
-                       │  scripts invoke
-          ┌────────────┼────────────┐
-          ▼            ▼            ▼
-        winget        mise       npm · uv
-      apps & CLI    runtimes     libraries
-          ▲            ▲            ▲
-          └────────────┼────────────┘
-                       │
-                    topgrade                updates, never installs
-```
-
-Top-down is **provisioning**. Bottom-up is **maintenance**. The rule that keeps
-it coherent: **topgrade never introduces anything new.** If a tool appears on
-this machine that isn't in the repo, the system has a hole in it.
-
-### Ownership rules
-
-| Situation | Owner | Recorded in |
-| --- | --- | --- |
-| GUI app or stable CLI tool | winget | `winget-packages.json` |
-| Language runtime, version matters | mise | `dot_config/mise/config.toml` |
-| Library inside a runtime | npm / uv / gem | `.default-npm-packages` etc. |
-| Config file contents | chezmoi | the `dot_*` file itself |
-| POSIX-only, no native build | WSL | WSL's own setup |
-
----
-
-## Which shell
-
-Keep the two ideas separate: the **terminal** is the window, the **shell** is
-what runs in it.
-
-**Windows Terminal is the managed terminal.** It comes from the manifest, and
-script 05 points its `defaultProfile` at pwsh 7 — so a rebuilt machine lands in
-the right shell with no manual step.
-
-**Warp is a personal preference, installed by hand.** It is deliberately
-excluded from the manifest (its installer is extremely slow and opens a welcome
-window mid-provisioning), so a rebuild will not have it. Install it whenever you
-want it, and set its default shell to pwsh in its own settings:
-
-```powershell
-winget install Warp.Warp --source winget
-```
-
-Warp's shell preference cannot be scripted — see
-[Deliberately not managed](#deliberately-not-managed).
-
-| Shell | Use it for |
-| --- | --- |
-| **PowerShell 7** (`pwsh`) | **Primary.** Everything here. `winget install Microsoft.PowerShell` |
-| Windows PowerShell 5.1 | Avoid. `&&` and `\|\|` are parser errors, `Set-Content` defaults to ANSI rather than UTF-8, and a native command's stderr sets `$?` false even on a clean exit — which misfires constantly around `git` and `winget`. |
-| Git Bash | POSIX scripts carried from the Mac. Also what runs git hooks — see `dot_config/husky/init.sh`. |
-| WSL | Genuinely Linux work. |
-| cmd.exe | Never. |
-
-### Documents is redirected to OneDrive
-
-`$PROFILE` resolves under `C:\Users\james\OneDrive\Documents\...`. **chezmoi must
-never manage a file inside a synced folder** — both tools write the path
-independently and produce `-SOPHON.ps1` conflict copies with no winner.
-
-The arrangement: chezmoi owns `~/.config/powershell/profile.ps1`, and one-line
-stubs at `$PROFILE` source it. The stubs never change, so OneDrive has nothing
-to conflict over. Script 02 writes them by asking each PowerShell edition for
-`$PROFILE.CurrentUserCurrentHost` rather than constructing a path — which is
-what makes the same code correct here and on a machine with no redirection.
-
----
-
-## First-time setup
-
-Only needed to recreate this repo from scratch; a rebuild uses the two commands
-at the top.
-
-1. **Install the shell.** `winget install Microsoft.PowerShell --source winget`.
-   No terminal configuration needed yet — Windows Terminal ships with Windows and
-   script 05 sets its default profile later. Warp, if wanted, is a hand install
-   at the end.
-2. **Install chezmoi and gh.**
-   `winget install twpayne.chezmoi GitHub.cli --source winget`, then
-   `gh auth login`. Neither will be on `PATH` in an already-running process —
-   restart the terminal, or in VS Code restart the editor, since new terminal
-   tabs inherit the editor's stale environment.
-3. **Create the repo.** `gh repo create jcouball/sophon-config --private`
-4. **Initialise.** `chezmoi init jcouball/sophon-config`
-5. **Set line endings before the first commit.**
-   `chezmoi cd`, then
-   `Set-Content -Path .gitattributes -Value '* text=auto eol=lf' -Encoding utf8`
-6. **Capture the package set.**
-   `winget export -o (chezmoi source-path)\winget-packages.json`
-7. **Add configs.** `chezmoi add ~/.gitconfig` etc.
-8. **Wire the profile via stubs**, never directly — see [Which shell](#which-shell).
-9. **Write `topgrade.toml` at `%APPDATA%`** — see the warning below.
-10. **Review, then apply.** `chezmoi diff`, then `chezmoi apply -v`
-11. **Push.** `chezmoi cd; git add -A; git commit; git push -u origin main`
-
----
-
-## What's in here
-
-```text
-README.md                             this document (ignored, not deployed)
-.chezmoi.toml.tmpl                    PowerShell interpreter, -ExecutionPolicy Bypass
-.chezmoiignore                        keeps README and the manifest source-only
-.gitattributes                        * text=auto eol=lf
-winget-packages.json                  32 packages; read by script 01, never deployed
-
-dot_config/powershell/profile.ps1     mise activation; the real profile
-dot_config/husky/init.sh              git hooks get mise on PATH
-dot_config/mise/config.toml           the seven pinned runtimes
-AppData/Roaming/topgrade.toml         update policy - NOT dot_config, see below
-
-.chezmoiscripts/
-  run_onchange_01_winget_install.ps1.tmpl          winget import
-  run_once_02_powershell_profile_stubs.ps1         stubs at $PROFILE, wherever that is
-  run_once_03_build_tools.ps1                      VS Build Tools C++ workload
-  run_onchange_after_04_mise_install.ps1.tmpl      materialise the runtimes
-  run_once_after_05_terminal_default_profile.ps1   point Terminal at pwsh 7
-```
-
-### Two path traps
-
-**`topgrade.toml` lives at `%APPDATA%`, not `~/.config`.** On macOS it's the Unix
-location; on Windows it is not. Put it in the Unix location and it is silently
-inert. `topgrade --dry-run` catches this — if steps you excluded still appear,
-the config isn't being read.
-
-**Anything in the source root without a leading dot becomes a target.**
-`README.md` and `winget-packages.json` would be written to the home directory;
-both are in `.chezmoiignore`. Dot-prefixed source files are ignored by chezmoi
-automatically, which is why real dotfiles need the `dot_` prefix.
-
-### The `after_` attribute is required, not stylistic
-
-Targets are applied in lexicographic order, and `.chezmoiscripts/` sorts before
-`.config/` — `.ch` precedes `.co`. Any script depending on a chezmoi-managed
-file must use `run_..._after_`, or it runs before that file exists. See
-[Certification](#certification) for what that cost.
-
----
-
-## Operating rhythm
-
-| When | Command | Why |
-| --- | --- | --- |
-| Immediately after editing any config by hand | `chezmoi re-add` | The single habit that makes this work. Skip it once and the repo starts lying to you. |
-| Weekly | `topgrade` | Sweeps winget, VS Code, gh extensions, Windows Update, and pulls the repo. |
-| Weekly, before topgrade | `chezmoi status` | Catches files changed on disk that never made it back. |
-| When adding a tool | `winget install` then `winget export` | Install, then re-snapshot. Commit both together. |
-| Per project | `mise install` | Runtimes are project-scoped. Never on a schedule. |
-| Monthly, or never | `chezmoi verify` | Optional audit that every managed file matches its declared state. |
-
-**Run bulk upgrades from an elevated terminal, with Warp and Teams closed.** A
-non-elevated run gets partway and then blocks invisibly on an elevation prompt it
-cannot display: no output, no error, zero CPU. Packages that update themselves
-(`Microsoft.AppInstaller`, `Warp`) cannot be upgraded while running.
-
-Nothing needs holding back any more — the JDK and Ruby both left winget for mise,
-so `winget upgrade --all` no longer touches anything a build depends on. The
-version discipline moved to layer 3, and topgrade's `only` list excludes mise
-precisely so a weekly sweep cannot reach it.
-
----
-
-## Playbooks
-
-The rule underlying all of them: **the repo must never lag the machine.**
-Whenever you install, remove or re-pin something, the corresponding file goes
-back into the repo in the same sitting.
 
 ### Layer 2 — applications and core tools
 
@@ -436,6 +234,253 @@ chezmoi update --dry-run
 chezmoi update
 ```
 
+### Re-certify the rebuild
+
+Do this after **any change to the bootstrap path**: a new or edited provisioning
+script, a new package manager, a change to `.chezmoi.toml.tmpl`, or a managed
+file whose location depends on the machine. Not needed for adding a package or
+bumping a runtime — those exercise proven ground.
+
+```powershell
+# on the host, ELEVATED - every Hyper-V cmdlet needs it, and unelevated they
+# return empty lists rather than errors
+Restore-VMCheckpoint -VMName sophon-cert -Name 'clean-windows' -Confirm:$false
+vmconnect.exe localhost sophon-cert
+```
+
+Then run the [rebuild](#-rebuild-from-nothing) **unmodified** — the point is to
+test what this README says, not a convenient variant — wrapped in a transcript,
+because without a log the failures have to be inferred from wreckage:
+
+```powershell
+Start-Transcript -Path "$HOME\bootstrap.log"
+chezmoi init --apply jcouball/sophon-config
+Stop-Transcript
+```
+
+Verify **outcomes, not exit codes**. A script returning zero has proved nothing:
+
+```powershell
+mise ls --current          # 7 tools, none "(missing)"
+Test-Path 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC'
+$env:JAVA_HOME             # populated, in a NEW shell
+chezmoi status             # empty
+```
+
+See [Certification](#certification) for why this exists and what it found.
+
+---
+
+## The governing rule
+
+> I use Topgrade to manage overall system and core tools, not the dependencies
+> for individual software projects. This prevents a global update from
+> accidentally breaking a project that depends on specific package versions.
+>
+> — from the macOS `topgrade.toml`
+
+**System and core tools** can be swept forward in bulk. **Project runtimes** are
+pinned, and are never upgraded by a command that also upgrades your browser.
+When adding something new, that question decides which layer owns it.
+
+### Why `sophon-config` and not `dotfiles`
+
+"dotfiles" is a Unix idiom. On Windows most of what is managed lives in
+`%APPDATA%` and `%LOCALAPPDATA%` — very little of it is dot-prefixed, so the name
+would misdescribe the contents. `sophon-config` leads with the scope (the
+machine) and stays tool-agnostic, so it survives if chezmoi is ever replaced.
+
+---
+
+## The stack
+
+| Layer | Tool | Owns |
+| --- | --- | --- |
+| 0 | git + gh | **Transport.** If a setting exists only on the machine and not here, it is not managed and will be lost. |
+| 1 | **chezmoi** | **Declaration and orchestrator.** Config file contents, and the manifest of what should be installed. Its scripts call the layers below; it installs nothing itself. |
+| 2 | **winget** | **Applications and stable CLI tools.** Git, VS Code, Chrome, 1Password, Docker, `gh`, `jq`, `rg`, chezmoi itself. Driven from `winget-packages.json`. |
+| 3 | **mise** | **All seven runtimes and build tools** — ant, go, java, node, python, ruby, rust. Pinned exactly; never swept. |
+| 4 | npm · uv · gem · cargo | **Libraries and runtime-scoped tools.** `prettier`, `yamllint`, `@github/copilot`. Subordinate to layer 3. |
+| 5 | **topgrade** | **Owns nothing.** Dispatches layers 2 and 4 plus Windows Update, VS Code, gh extensions and chezmoi. |
+| 6 | WSL | **Escape hatch** for POSIX-only tooling — `skopeo`, `redis`, `htop`, GNU autotools. Separate machine, separate management. |
+
+`mise activate pwsh` exports `JAVA_HOME`, `ANT_HOME`, `GOROOT`, `CARGO_HOME` and
+`RUSTUP_HOME` — not just `PATH`. That is what lets it own the JDK, which `mvnw`
+requires. Activation works in Windows PowerShell 5.1 too; only mise's `chpwd`
+hook, and therefore per-directory switching, needs pwsh 7.
+
+### How the layers call each other
+
+```text
+        github.com/jcouball/sophon-config
+                       │
+                       │  chezmoi update
+                       ▼
+                    chezmoi                 renders files, runs scripts
+                       │
+                       │  scripts invoke
+          ┌────────────┼────────────┐
+          ▼            ▼            ▼
+        winget        mise       npm · uv
+      apps & CLI    runtimes     libraries
+          ▲            ▲            ▲
+          └────────────┼────────────┘
+                       │
+                    topgrade                updates, never installs
+```
+
+Top-down is **provisioning**. Bottom-up is **maintenance**. The rule that keeps
+it coherent: **topgrade never introduces anything new.** If a tool appears on
+this machine that isn't in the repo, the system has a hole in it.
+
+### Ownership rules
+
+| Situation | Owner | Recorded in |
+| --- | --- | --- |
+| GUI app or stable CLI tool | winget | `winget-packages.json` |
+| Language runtime, version matters | mise | `dot_config/mise/config.toml` |
+| Library inside a runtime | npm / uv / gem | `.default-npm-packages` etc. |
+| Config file contents | chezmoi | the `dot_*` file itself |
+| POSIX-only, no native build | WSL | WSL's own setup |
+
+---
+
+## What's in here
+
+```text
+README.md                             this document (ignored, not deployed)
+.chezmoi.toml.tmpl                    PowerShell interpreter, -ExecutionPolicy Bypass
+.chezmoiignore                        keeps README and the manifest source-only
+.gitattributes                        * text=auto eol=lf
+winget-packages.json                  32 packages; read by script 01, never deployed
+
+dot_config/powershell/profile.ps1     mise activation; the real profile
+dot_config/husky/init.sh              git hooks get mise on PATH
+dot_config/mise/config.toml           the seven pinned runtimes
+AppData/Roaming/topgrade.toml         update policy - NOT dot_config, see below
+
+.chezmoiscripts/
+  run_onchange_01_winget_install.ps1.tmpl          winget import
+  run_once_02_powershell_profile_stubs.ps1         stubs at $PROFILE, wherever that is
+  run_once_03_build_tools.ps1                      VS Build Tools C++ workload
+  run_onchange_after_04_mise_install.ps1.tmpl      materialise the runtimes
+  run_once_after_05_terminal_default_profile.ps1   point Terminal at pwsh 7
+```
+
+### Two path traps
+
+**`topgrade.toml` lives at `%APPDATA%`, not `~/.config`.** On macOS it's the Unix
+location; on Windows it is not. Put it in the Unix location and it is silently
+inert. `topgrade --dry-run` catches this — if steps you excluded still appear,
+the config isn't being read.
+
+**Anything in the source root without a leading dot becomes a target.**
+`README.md` and `winget-packages.json` would be written to the home directory;
+both are in `.chezmoiignore`. Dot-prefixed source files are ignored by chezmoi
+automatically, which is why real dotfiles need the `dot_` prefix.
+
+### The `after_` attribute is required, not stylistic
+
+Targets are applied in lexicographic order, and `.chezmoiscripts/` sorts before
+`.config/` — `.ch` precedes `.co`. Any script depending on a chezmoi-managed
+file must use `run_..._after_`, or it runs before that file exists. See
+[Certification](#certification) for what that cost.
+
+---
+
+## Which shell
+
+Keep the two ideas separate: the **terminal** is the window, the **shell** is
+what runs in it.
+
+**Windows Terminal is the managed terminal.** It comes from the manifest, and
+script 05 points its `defaultProfile` at pwsh 7 — so a rebuilt machine lands in
+the right shell with no manual step.
+
+**Warp is a personal preference, installed by hand.** It is deliberately
+excluded from the manifest (its installer is extremely slow and opens a welcome
+window mid-provisioning), so a rebuild will not have it. Install it whenever you
+want it, and set its default shell to pwsh in its own settings:
+
+```powershell
+winget install Warp.Warp --source winget
+```
+
+Warp's shell preference cannot be scripted — see
+[Deliberately not managed](#deliberately-not-managed).
+
+| Shell | Use it for |
+| --- | --- |
+| **PowerShell 7** (`pwsh`) | **Primary.** Everything here. `winget install Microsoft.PowerShell` |
+| Windows PowerShell 5.1 | Avoid. `&&` and `\|\|` are parser errors, `Set-Content` defaults to ANSI rather than UTF-8, and a native command's stderr sets `$?` false even on a clean exit — which misfires constantly around `git` and `winget`. |
+| Git Bash | POSIX scripts carried from the Mac. Also what runs git hooks — see `dot_config/husky/init.sh`. |
+| WSL | Genuinely Linux work. |
+| cmd.exe | Never. |
+
+### Documents is redirected to OneDrive
+
+`$PROFILE` resolves under `C:\Users\james\OneDrive\Documents\...`. **chezmoi must
+never manage a file inside a synced folder** — both tools write the path
+independently and produce `-SOPHON.ps1` conflict copies with no winner.
+
+The arrangement: chezmoi owns `~/.config/powershell/profile.ps1`, and one-line
+stubs at `$PROFILE` source it. The stubs never change, so OneDrive has nothing
+to conflict over. Script 02 writes them by asking each PowerShell edition for
+`$PROFILE.CurrentUserCurrentHost` rather than constructing a path — which is
+what makes the same code correct here and on a machine with no redirection.
+
+---
+
+## First-time setup
+
+Only needed to recreate this repo from scratch; a rebuild uses the two commands
+at the top.
+
+1. **Install the shell.** `winget install Microsoft.PowerShell --source winget`.
+   No terminal configuration needed yet — Windows Terminal ships with Windows and
+   script 05 sets its default profile later. Warp, if wanted, is a hand install
+   at the end.
+2. **Install chezmoi and gh.**
+   `winget install twpayne.chezmoi GitHub.cli --source winget`, then
+   `gh auth login`. Neither will be on `PATH` in an already-running process —
+   restart the terminal, or in VS Code restart the editor, since new terminal
+   tabs inherit the editor's stale environment.
+3. **Create the repo.** `gh repo create jcouball/sophon-config --private`
+4. **Initialise.** `chezmoi init jcouball/sophon-config`
+5. **Set line endings before the first commit.**
+   `chezmoi cd`, then
+   `Set-Content -Path .gitattributes -Value '* text=auto eol=lf' -Encoding utf8`
+6. **Capture the package set.**
+   `winget export -o (chezmoi source-path)\winget-packages.json`
+7. **Add configs.** `chezmoi add ~/.gitconfig` etc.
+8. **Wire the profile via stubs**, never directly — see [Which shell](#which-shell).
+9. **Write `topgrade.toml` at `%APPDATA%`** — see the warning below.
+10. **Review, then apply.** `chezmoi diff`, then `chezmoi apply -v`
+11. **Push.** `chezmoi cd; git add -A; git commit; git push -u origin main`
+
+---
+
+## Operating rhythm
+
+| When | Command | Why |
+| --- | --- | --- |
+| Immediately after editing any config by hand | `chezmoi re-add` | The single habit that makes this work. Skip it once and the repo starts lying to you. |
+| Weekly | `topgrade` | Sweeps winget, VS Code, gh extensions, Windows Update, and pulls the repo. |
+| Weekly, before topgrade | `chezmoi status` | Catches files changed on disk that never made it back. |
+| When adding a tool | `winget install` then `winget export` | Install, then re-snapshot. Commit both together. |
+| Per project | `mise install` | Runtimes are project-scoped. Never on a schedule. |
+| Monthly, or never | `chezmoi verify` | Optional audit that every managed file matches its declared state. |
+
+**Run bulk upgrades from an elevated terminal, with Warp and Teams closed.** A
+non-elevated run gets partway and then blocks invisibly on an elevation prompt it
+cannot display: no output, no error, zero CPU. Packages that update themselves
+(`Microsoft.AppInstaller`, `Warp`) cannot be upgraded while running.
+
+Nothing needs holding back any more — the JDK and Ruby both left winget for mise,
+so `winget upgrade --all` no longer touches anything a build depends on. The
+version discipline moved to layer 3, and topgrade's `only` list excludes mise
+precisely so a weekly sweep cannot reach it.
+
 ---
 
 ## Ownership decisions
@@ -563,30 +608,12 @@ Two traps: connect with `vmconnect` **before** starting the VM, or the
 unelevated they return *empty lists* rather than access-denied, so a checkpoint
 can appear not to exist when it does.
 
-### Re-certifying
+### Running it again
 
-Any change to the **bootstrap path**: a new or edited provisioning script, a new
-package manager, a change to `.chezmoi.toml.tmpl`, or a managed file whose
-location depends on the machine. Not needed for adding a package or bumping a
-runtime — those exercise proven ground.
-
-```powershell
-Restore-VMCheckpoint -VMName sophon-cert -Name 'clean-windows' -Confirm:$false
-vmconnect.exe localhost sophon-cert
-```
-
-Then run the documented bootstrap **unmodified** — the point is to test what this
-README says, not a convenient variant — with `Start-Transcript`, because without
-a log the failures have to be inferred from wreckage.
-
-Verify **outcomes, not exit codes**. A script returning zero has proved nothing:
-
-```powershell
-mise ls --current          # 7 tools, none "(missing)"
-Test-Path 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC'
-$env:JAVA_HOME             # populated, in a NEW shell
-chezmoi status             # empty
-```
+The procedure lives with the other procedures:
+**[Re-certify the rebuild](#re-certify-the-rebuild)**. Keep the VM and its
+`clean-windows` checkpoint — reverting costs seconds, rebuilding that
+environment costs an hour.
 
 ---
 
