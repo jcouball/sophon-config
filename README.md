@@ -27,19 +27,19 @@ nothing here needs a conditional.
   - [Rebuild from nothing](#rebuild-from-nothing) — the emergency procedure
   - [Playbooks](#playbooks) — everyday tasks, grouped by the layer that owns them
 - **Understand it**
-  - [The governing rule](#the-governing-rule)
-  - [The stack](#the-stack)
-  - [What's in here](#whats-in-here)
+  - [System tools vs project runtimes](#system-tools-vs-project-runtimes)
+  - [The stack](#the-stack) — the layers, and who owns what
+  - [Repository layout](#repository-layout) — every file, and two path traps
   - [Which shell](#which-shell)
-  - [First-time setup](#first-time-setup) — recreating this repo, not rebuilding the machine
-  - [Operating rhythm](#operating-rhythm)
+  - [Recreating this repo from scratch](#recreating-this-repo-from-scratch) — not the machine
+  - [How often to run what](#how-often-to-run-what)
 - **Why it is the way it is**
   - [Ownership decisions](#ownership-decisions)
   - [Native JRuby development](#native-jruby-development)
   - [Certification](#certification) — eleven defects a clean machine found
   - [Secrets](#secrets)
   - [Deliberately not managed](#deliberately-not-managed)
-  - [Notes](#notes)
+  - [Small gotchas](#small-gotchas)
 
 ---
 
@@ -270,7 +270,7 @@ See [Certification](#certification) for why this exists and what it found.
 
 ---
 
-## The governing rule
+## System tools vs project runtimes
 
 > I use Topgrade to manage overall system and core tools, not the dependencies
 > for individual software projects. This prevents a global update from
@@ -344,7 +344,7 @@ this machine that isn't in the repo, the system has a hole in it.
 
 ---
 
-## What's in here
+## Repository layout
 
 ```text
 README.md                             this document (ignored, not deployed)
@@ -430,7 +430,7 @@ what makes the same code correct here and on a machine with no redirection.
 
 ---
 
-## First-time setup
+## Recreating this repo from scratch
 
 Only needed to recreate this repo from scratch; a rebuild uses the two commands
 at the top.
@@ -459,7 +459,7 @@ at the top.
 
 ---
 
-## Operating rhythm
+## How often to run what
 
 | When | Command | Why |
 | --- | --- | --- |
@@ -684,7 +684,7 @@ unreachable objects, so the old commit may remain fetchable by SHA afterwards.
 
 ---
 
-## Notes
+## Small gotchas
 
 - **`core.autocrlf=false`** globally, and `* text=auto eol=lf` here. A Ruby
   checkout is line-ending sensitive, and hook scripts must be LF or `sh` fails
