@@ -24,9 +24,8 @@ nothing here needs a conditional.
 ## Contents
 
 - **Do something**
-  - [🚨 Rebuild from nothing](#-rebuild-from-nothing)
+  - [Rebuild from nothing](#rebuild-from-nothing) — the emergency procedure
   - [Playbooks](#playbooks) — everyday tasks, grouped by the layer that owns them
-  - [Re-certify the rebuild](#re-certify-the-rebuild)
 - **Understand it**
   - [The governing rule](#the-governing-rule)
   - [The stack](#the-stack)
@@ -44,13 +43,7 @@ nothing here needs a conditional.
 
 ---
 
-## Playbooks
-
-The rule underlying all of them: **the repo must never lag the machine.**
-Whenever you install, remove or re-pin something, the corresponding file goes
-back into the repo in the same sitting.
-
-### 🚨 Rebuild from nothing
+## Rebuild from nothing
 
 **The emergency procedure.** Neither detail below is optional — both were found
 the hard way on a clean VM, and without them the very first step fails.
@@ -74,6 +67,12 @@ Afterwards, by hand: Warp if you want it, and Warp's own settings, which cannot
 be versioned.
 
 ---
+
+## Playbooks
+
+The rule underlying all of them: **the repo must never lag the machine.**
+Whenever you install, remove or re-pin something, the corresponding file goes
+back into the repo in the same sitting.
 
 ### Layer 2 — applications and core tools
 
@@ -248,7 +247,7 @@ Restore-VMCheckpoint -VMName sophon-cert -Name 'clean-windows' -Confirm:$false
 vmconnect.exe localhost sophon-cert
 ```
 
-Then run the [rebuild](#-rebuild-from-nothing) **unmodified** — the point is to
+Then run the [rebuild](#rebuild-from-nothing) **unmodified** — the point is to
 test what this README says, not a convenient variant — wrapped in a transcript,
 because without a log the failures have to be inferred from wreckage:
 
