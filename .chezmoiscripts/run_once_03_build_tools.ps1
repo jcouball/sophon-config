@@ -1,6 +1,6 @@
 # Verify the Visual Studio 2022 Build Tools C++ workload is present.
 #
-# THIS IS LOAD-BEARING, not a safety net. Verified on a clean VM.
+# THIS SCRIPT DOES REAL WORK - it is not a safety net. Verified on a clean VM.
 #
 # `winget export` does record the override arguments -- the manifest carries:
 #

@@ -52,8 +52,8 @@ back into the repo in the same sitting.
 
 ### 🚨 Rebuild from nothing
 
-**The emergency procedure.** Both details are load-bearing and were found the
-hard way on a clean VM — without them the very first step fails.
+**The emergency procedure.** Neither detail below is optional — both were found
+the hard way on a clean VM, and without them the very first step fails.
 
 ```powershell
 # normal terminal
