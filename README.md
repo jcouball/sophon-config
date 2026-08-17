@@ -121,6 +121,12 @@ chezmoi cd; git commit -am "ruby 4.0.6 -> 4.0.7"; git push
 `mise use -g` rewrites `config.toml`, so that file must go back to the repo — it
 is the declaration a rebuild replays.
 
+Changing `config.toml` re-triggers script 06 as well as script 04. For a **Ruby**
+bump that is the point — the new install has no compiler until it runs — but it
+means the apply that installs Ruby 4.0.7 also spends several minutes and about a
+gigabyte fetching the toolchain again. See
+[Ruby native extensions](#ruby-native-extensions--the-toolchain-lives-inside-the-ruby).
+
 #### Add a new runtime
 
 ```powershell
@@ -364,6 +370,7 @@ AppData/Roaming/topgrade.toml         update policy - NOT dot_config, see below
   run_once_03_build_tools.ps1                      VS Build Tools C++ workload
   run_onchange_after_04_mise_install.ps1.tmpl      materialise the runtimes
   run_once_after_05_terminal_default_profile.ps1   point Terminal at pwsh 7
+  run_onchange_after_06_ruby_devkit.ps1.tmpl       MSYS2 toolchain for native gems
 ```
 
 ### Two path traps
@@ -520,6 +527,37 @@ does **not** apply them — the data survives the round-trip, the effect does no
 Script 03 exists for that, and needs `--force` because a plain `winget install`
 against an already-installed package answers "no available upgrade" and skips
 the override entirely.
+
+### Ruby native extensions — the toolchain lives inside the Ruby
+
+mise installs Ruby from RubyInstaller2, but the bare build, with no compiler. The
+symptom is a `bundle install` where *every* native gem fails identically —
+`The compiler failed to generate an executable file` — which reads like a broken
+Ruby rather than a missing toolchain. `ridk install 1 3` fixes it; script 06 runs
+that.
+
+The part worth recording is **where it installs**, because the obvious assumption
+is wrong and it is wrong quietly. It is not `C:\msys64`, and it is not shared.
+RubyInstaller's installer component hardcodes its root:
+
+```ruby
+run_verbose(downloaded_path, "install", "--root",
+            File.join(RbConfig::TOPDIR, "msys64"), ...)
+  # site_ruby/<ver>/ruby_installer/runtime/components/01_msys2.rb
+```
+
+and `RbConfig::TOPDIR` for a mise-managed Ruby is the *versioned* install
+directory — `...\mise\installs\ruby\4.0.6`. So the toolchain lives inside the
+Ruby that mise owns, and a version bump leaves it behind. This is why script 06
+is `run_onchange` on `config.toml` and not `run_once`: `run_once` would fix this
+machine today and let the next Ruby bump silently break native gems again.
+
+Contrast with the Rust linker above, which is genuinely machine-level and
+therefore belongs to winget. A shared MSYS2 would work here too —
+`iterate_msys_paths` searches `C:/msys64` and the directory beside `TOPDIR` — but
+putting one there means either adding `MSYS2.MSYS2` to the manifest or
+reimplementing component 1's pinned download, and neither is worth displacing
+ridk's own supported path. The accepted cost is the re-download on a Ruby bump.
 
 ### Git hooks — husky's `init.sh`
 

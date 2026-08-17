@@ -1,0 +1,114 @@
+# Install the MSYS2 + MINGW toolchain that Ruby's native extensions need.
+#
+# mise installs Ruby on Windows from RubyInstaller2, but it installs the *bare*
+# build -- no compiler. Nothing complains until the first `bundle install` in a
+# project with native gems, which fails on every one of them (bigdecimal, json,
+# prism, erb, io-console, ...) with:
+#
+#   The compiler failed to generate an executable file.
+#   You have to install development tools first.
+#
+# `ridk version` is not evidence either way. It reports a `cc:` line baked in at
+# build time on RubyInstaller's CI, so it names a compiler this machine has never
+# had. Check for gcc, not for ridk's opinion of gcc.
+#
+# WHY THIS IS `run_onchange` ON THE MISE CONFIG, NOT `run_once`
+#
+# Because the toolchain does NOT live at C:\msys64, and is NOT shared between
+# Ruby versions. RubyInstaller's own installer component hardcodes the root:
+#
+#   run_verbose(downloaded_path, "install", "--root",
+#               File.join(RbConfig::TOPDIR, "msys64"), ...)
+#     -- site_ruby/<ver>/ruby_installer/runtime/components/01_msys2.rb
+#
+# and RbConfig::TOPDIR for a mise-managed Ruby is the versioned install dir:
+#
+#   C:\Users\james\AppData\Local\mise\installs\ruby\4.0.6
+#
+# So MSYS2 lands *inside* the Ruby that mise owns. Bump `ruby = ...` in
+# config.toml and mise builds a fresh install dir with no msys64 in it -- every
+# native gem breaks again, in whatever project you happen to touch next, with no
+# hint that a version bump caused it.
+#
+# `run_once_` would encode exactly that mistake: it would run on this machine
+# today and never again. Keying this to the same config.toml hash that drives
+# script 04 means a Ruby bump reinstalls the runtime and re-provisions its
+# toolchain in the same `chezmoi apply`. The cost is honest and worth naming: a
+# Ruby version change re-downloads the toolchain, roughly 1 GB and several
+# minutes, unattended.
+#
+# The alternative -- one shared MSYS2 outside the mise tree -- does work;
+# `iterate_msys_paths` in msys2_installation.rb searches C:/msys64 and the
+# directory beside TOPDIR. It was not taken because installing it means either
+# adding MSYS2.MSYS2 to the winget manifest or reimplementing component 1's
+# pinned-version-and-hash download, and both are more moving parts than letting
+# ridk use its own supported path.
+#
+# config.toml hash: {{ include "dot_config/mise/config.toml" | sha256sum }}
+
+# Refresh PATH from the registry, for the same reason scripts 02 and 04 do it:
+# mise arrives from script 01 in this same run, and Windows never propagates PATH
+# into an already-running process. Note that this gets us `mise` itself -- it
+# does NOT get us ruby. mise's shims directory is deliberately not on PATH on
+# this host; Ruby reaches an interactive shell through `mise activate` in the
+# PowerShell profile, and chezmoi runs its scripts with -NoProfile. So every path
+# below is resolved explicitly rather than assumed to be on PATH.
+$env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
+            [Environment]::GetEnvironmentVariable('Path', 'User')
+
+if (-not (Get-Command mise -ErrorAction SilentlyContinue)) {
+    Write-Warning 'mise is not on PATH even after refreshing it - check that script 01 installed jdx.mise.'
+    return
+}
+
+$rubyDir = (& mise where ruby 2>$null | Select-Object -First 1)
+if ($LASTEXITCODE -ne 0 -or -not $rubyDir -or -not (Test-Path $rubyDir)) {
+    Write-Host 'No Ruby installed by mise - nothing to do.'
+    return
+}
+
+$ridk = Join-Path $rubyDir 'bin\ridk.cmd'
+if (-not (Test-Path $ridk)) {
+    Write-Warning "ridk not found at $ridk - this Ruby is not a RubyInstaller build. Skipping."
+    return
+}
+
+# One wildcard segment rather than a hardcoded 'ucrt64', so this keeps working if
+# the platform changes: RubyInstaller picks the MINGW directory from
+# RUBY_PLATFORM (x64-mingw-ucrt -> ucrt64, x64-mingw32 -> mingw64, and so on).
+# Test for gcc specifically, not for the msys64 directory -- component 1 installs
+# the MSYS2 base and component 3 installs the compiler, and an interrupted run
+# can leave the first without the second.
+$gcc = Get-ChildItem (Join-Path $rubyDir 'msys64\*\bin\gcc.exe') -ErrorAction SilentlyContinue |
+       Select-Object -First 1
+
+if ($gcc) {
+    Write-Host "Ruby devkit present ($($gcc.FullName))"
+    return
+}
+
+Write-Host "Installing the MSYS2 + MINGW toolchain into $rubyDir ..."
+Write-Host 'This downloads several hundred MB and takes a few minutes.'
+
+# `install 1 3` is what makes this unattended. With no component arguments ridk
+# prompts on STDIN and would hang a chezmoi run; with arguments it takes the
+# "Unattended installation" branch. 1 = MSYS2 base, 3 = the MINGW dev toolchain.
+# Component 2 is the MSYS2 system update, which a fresh component 1 already
+# covers. These two are also ridk's own DEFAULT_COMPONENTS. Re-running is safe:
+# component 1 short-circuits when MSYS2 is healthy and component 3 shells out to
+# pacman with --needed --noconfirm.
+#
+# ridk writes all of its progress to stderr (Components::Base overrides #puts to
+# use $stderr). Left alone, Windows PowerShell renders that as a wall of red
+# error text on a completely successful install. Merging and stringifying it
+# keeps the transcript readable without hiding anything.
+& $ridk install 1 3 2>&1 | ForEach-Object { "$_" }
+
+$gcc = Get-ChildItem (Join-Path $rubyDir 'msys64\*\bin\gcc.exe') -ErrorAction SilentlyContinue |
+       Select-Object -First 1
+
+if ($gcc) {
+    Write-Host "Ruby devkit installed ($($gcc.FullName))"
+} else {
+    Write-Warning 'ridk finished but gcc is still missing - native gems will not build. Check the output above.'
+}
