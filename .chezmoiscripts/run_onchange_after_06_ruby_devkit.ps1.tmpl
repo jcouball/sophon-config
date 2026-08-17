@@ -61,9 +61,31 @@ if (-not (Get-Command mise -ErrorAction SilentlyContinue)) {
     return
 }
 
+# "mise has no Ruby" has two causes that must NOT be reported the same way:
+#
+#   - Ruby was removed from config.toml. Correct, benign, nothing to do.
+#   - Ruby is declared but missing. Script 04 was supposed to install it and
+#     this script runs after it, so this means the ordering broke.
+#
+# Without this distinction the second case prints a calm "nothing to do",
+# returns 0, and the rebuild reports success with no toolchain anywhere -- the
+# same silent-success failure script 04's header records ("the run looked
+# entirely successful and every single runtime was missing"). A rebuild that is
+# wrong must say so.
+$miseConfig = Join-Path $HOME '.config\mise\config.toml'
+$rubyDeclared = (Test-Path $miseConfig) -and
+                ((Get-Content $miseConfig -Raw) -match '(?m)^\s*ruby\s*=')
+
 $rubyDir = (& mise where ruby 2>$null | Select-Object -First 1)
 if ($LASTEXITCODE -ne 0 -or -not $rubyDir -or -not (Test-Path $rubyDir)) {
-    Write-Host 'No Ruby installed by mise - nothing to do.'
+    if ($rubyDeclared) {
+        Write-Warning ('config.toml declares ruby but mise cannot locate it. Script 04 ' +
+                       'should have installed it before this script ran - check that ' +
+                       'the after_ attribute and the 04/06 ordering still hold. ' +
+                       'No toolchain installed; native gems will not build.')
+    } else {
+        Write-Host 'No ruby declared in the mise config - nothing to do.'
+    }
     return
 }
 
