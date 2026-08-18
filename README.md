@@ -366,12 +366,18 @@ AppData/Roaming/topgrade.toml         update policy - NOT dot_config, see below
 
 .chezmoiscripts/
   run_onchange_01_winget_install.ps1.tmpl          winget import
+  run_once_02_powershell_execution_policy.ps1      let 5.1 load the stubs at all
   run_once_02_powershell_profile_stubs.ps1         stubs at $PROFILE, wherever that is
   run_once_03_build_tools.ps1                      VS Build Tools C++ workload
   run_onchange_after_04_mise_install.ps1.tmpl      materialise the runtimes
   run_once_after_05_terminal_default_profile.ps1   point Terminal at pwsh 7
   run_onchange_after_06_ruby_devkit.ps1.tmpl       MSYS2 toolchain for native gems
+  run_once_after_07_mise_shims_path.ps1            shims on user PATH, for cmd.exe
 ```
+
+Two scripts share the number `02` because they are one job: making PowerShell
+actually load the managed profile. Writing a stub a shell refuses to execute
+accomplishes nothing. They sort in the order they need to run — `e` before `p`.
 
 ### Two path traps
 
@@ -422,6 +428,36 @@ Warp's shell preference cannot be scripted — see
 | Git Bash | POSIX scripts carried from the Mac. Also what runs git hooks — see `dot_config/husky/init.sh`. |
 | WSL | Genuinely Linux work. |
 | cmd.exe | Never. |
+
+### How the managed tools reach a shell
+
+Two mechanisms, and knowing which one is carrying a given shell is the
+difference between a five-minute diagnosis and an hour of it.
+
+**`mise activate`, from the PowerShell profile.** The primary path. It injects
+the tool directories into `PATH` *and* exports `JAVA_HOME`, `ANT_HOME`,
+`GOROOT`, `CARGO_HOME` and `RUSTUP_HOME`. The JRuby build reads the first two,
+so this is not optional and cannot be replaced by shims. PowerShell only.
+
+**`%LOCALAPPDATA%\mise\shims` on the persisted user `PATH`.** Added by script
+07. Real `.exe` files that re-dispatch through mise, so anything that reads
+`PATH` finds them — cmd.exe, a 5.1 window whose policy is locked down, a GUI app
+launched from Explorer. It resolves tools; it exports nothing.
+
+| Shell | Tools via | Why |
+| --- | --- | --- |
+| pwsh 7 | activation, plus shims | Profile loads; policy is `RemoteSigned` from a `powershell.config.json` inside its install directory |
+| Windows PowerShell 5.1 | activation, plus shims | Only since script 02 set `CurrentUser` to `RemoteSigned`. Before that the stub was refused and the shell had nothing |
+| cmd.exe | shims only | mise has **no** cmd.exe activation. There is no hook to install. Shims are the only route |
+| Git Bash | shims, prepended by `init.sh` | Only for git hooks, and only inside them. `mise activate bash` emits a Windows-form `;`-separated `PATH` that shreds a POSIX one — see `dot_config/husky/init.sh`. An interactive Git Bash still has neither |
+
+The failure this fixed: `ruby` and `irb` were "not recognized" in both cmd.exe
+and Windows PowerShell 5.1, for two unrelated reasons that presented
+identically. 5.1 was refusing the profile stub under the default `Restricted`
+policy — which is per-edition, so pwsh 7 was unaffected and hid it. cmd.exe was
+never covered at all. Watch for `PSExecutionPolicyPreference` when diagnosing
+this: an `-ExecutionPolicy Bypass` parent sets it, child processes inherit it,
+and both editions then report a policy the real shell does not have.
 
 ### Documents is redirected to OneDrive
 

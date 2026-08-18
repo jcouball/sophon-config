@@ -49,10 +49,13 @@
 # Refresh PATH from the registry, for the same reason scripts 02 and 04 do it:
 # mise arrives from script 01 in this same run, and Windows never propagates PATH
 # into an already-running process. Note that this gets us `mise` itself -- it
-# does NOT get us ruby. mise's shims directory is deliberately not on PATH on
-# this host; Ruby reaches an interactive shell through `mise activate` in the
-# PowerShell profile, and chezmoi runs its scripts with -NoProfile. So every path
-# below is resolved explicitly rather than assumed to be on PATH.
+# does NOT get us ruby, and must not be assumed to. Ruby reaches an interactive
+# shell two ways, neither of which is available here: `mise activate` in the
+# PowerShell profile, and chezmoi runs its scripts with -NoProfile; and the shims
+# directory on the user PATH, which script 07 adds but which has not run yet on a
+# fresh machine, and would be a stale inherited PATH in this process even after
+# it has. So every path below is resolved explicitly rather than assumed to be on
+# PATH -- that stays correct regardless of what script 07 does.
 $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
             [Environment]::GetEnvironmentVariable('Path', 'User')
 
