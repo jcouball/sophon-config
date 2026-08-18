@@ -80,8 +80,48 @@ $env:PSExecutionPolicyPreference = $null
 
 $permissive = 'RemoteSigned', 'Unrestricted', 'Bypass'
 
+# Clear PSModulePath around every child launch, and this is not defensive
+# programming -- without it this script cannot work at all when chezmoi is run
+# from pwsh 7, which is the documented way to run it.
+#
+# chezmoi inherits PSModulePath from the shell that started it and passes it to
+# the `powershell` interpreter declared in .chezmoi.toml.tmpl. Started from
+# pwsh 7, that value leads with pwsh's own module directory:
+#
+#   ...\WindowsApps\microsoft.powershell_7.6.5.0_x64__8wekyb3d8bbwe\Modules
+#
+# which ships a PowerShell *Core* build of Microsoft.PowerShell.Security, and it
+# precedes C:\WINDOWS\system32\WindowsPowerShell\v1.0\Modules. Windows PowerShell
+# 5.1 therefore resolves Get-ExecutionPolicy and Set-ExecutionPolicy to the Core
+# module and cannot load it:
+#
+#   The 'Get-ExecutionPolicy' command was found in the module
+#   'Microsoft.PowerShell.Security', but the module could not be loaded.
+#
+# Both halves break, and the failure is shaped exactly like the answer: the read
+# returns nothing, which looks like a restrictive policy, and the write then dies
+# with CommandNotFoundException. The first run of this script through chezmoi hit
+# precisely that and reported a Group Policy problem that did not exist.
+#
+# Clearing the variable makes each child compute its own edition-correct default.
+# Restore it afterwards rather than nulling it for the whole process, because
+# this process still needs to autoload its own modules.
+function Invoke-Edition($exe, $command) {
+    $saved = $env:PSModulePath
+    $env:PSModulePath = $null
+    try {
+        & $exe -NoProfile -NonInteractive -Command $command 2>&1 | ForEach-Object { "$_" }
+    } finally {
+        $env:PSModulePath = $saved
+    }
+}
+
+# Match the policy name rather than taking the first line: stderr is merged in
+# above, so a failed call must come back as $null and not as the first line of an
+# error record.
 function Get-EditionPolicy($exe) {
-    $out = & $exe -NoProfile -NonInteractive -Command 'Get-ExecutionPolicy' 2>$null |
+    $out = Invoke-Edition $exe 'Get-ExecutionPolicy' |
+           Where-Object { $_ -match '^\s*(Restricted|AllSigned|RemoteSigned|Unrestricted|Bypass|Undefined)\s*$' } |
            Select-Object -First 1
     if ($out) { return "$out".Trim() }
     return $null
@@ -99,21 +139,25 @@ foreach ($exe in 'powershell.exe', 'pwsh.exe') {
         continue
     }
 
-    Write-Host "$exe is $before - setting CurrentUser to RemoteSigned ..."
-    & $exe -NoProfile -NonInteractive -Command `
-        'Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force' 2>&1 |
-        ForEach-Object { "$_" }
+    $was = if ($before) { $before } else { 'unreadable' }
+    Write-Host "$exe is $was - setting CurrentUser to RemoteSigned ..."
+    Invoke-Edition $exe 'Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force'
 
     $after = Get-EditionPolicy $exe
     if ($after -in $permissive) {
         Write-Host "$exe now $after"
     } else {
+        # Two causes, and they need different responses, so do not collapse them.
         # A Group Policy at MachinePolicy or UserPolicy scope outranks CurrentUser
-        # and cannot be overridden from here. Say so, rather than reporting a
-        # clean run over a shell that will still open with no environment in it.
-        Write-Warning ("$exe is still $after after setting CurrentUser. A Group Policy " +
-                       'scope likely outranks it - run `Get-ExecutionPolicy -List` in ' +
-                       "$exe to see which. Until that is resolved, that shell will not " +
-                       'load the profile and mise will not activate in it.')
+        # and cannot be overridden from here. An unreadable policy means the
+        # cmdlet would not load at all, which is the PSModulePath shadowing
+        # described above and a bug in this script, not in the machine.
+        $why = if ($after) { "is still $after" } else { 'would not report its policy' }
+        Write-Warning ("$exe $why after setting CurrentUser. Run " +
+                       "``Get-ExecutionPolicy -List`` in ${exe}: a Group Policy scope " +
+                       'outranking CurrentUser explains the first case, and a ' +
+                       'Microsoft.PowerShell.Security load failure the second. Until ' +
+                       'this is resolved that shell will not load the profile, so mise ' +
+                       'will not activate in it.')
     }
 }
