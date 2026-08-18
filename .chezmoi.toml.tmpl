@@ -8,9 +8,18 @@
 #
 # which takes down the entire provisioning layer -- no packages, no profile
 # stubs, no runtimes. Telling the machine to relax its policy would work, but it
-# is a manual step before the bootstrap and a permanent change to the host. This
-# scopes the bypass to chezmoi's own scripts instead, so the rebuild stays two
-# commands and the machine's policy is left alone.
+# is a manual step before the bootstrap. This scopes the bypass to chezmoi's own
+# scripts instead, so the rebuild stays two commands.
+#
+# THIS DOES NOT COVER INTERACTIVE SHELLS, and for a long time the repo implied it
+# did. The bypass applies to processes chezmoi launches, nothing else. A shell
+# the user opens still obeys the host policy, and Windows PowerShell 5.1 defaults
+# to Restricted -- so it wrote the profile stubs faithfully and then refused to
+# run them, leaving 5.1 windows with no mise activation and no managed tools.
+# That is script 02's execution-policy half, which does relax the host policy
+# (CurrentUser, RemoteSigned). The two are not redundant: this block is what lets
+# that script run in the first place, on a machine where nothing is configured
+# yet.
 #
 # `powershell` rather than `pwsh` deliberately: pwsh 7 arrives from the winget
 # manifest, so it does not exist when the first script runs.
