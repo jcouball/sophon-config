@@ -358,7 +358,7 @@ README.md                             this document (ignored, not deployed)
 .chezmoi.toml.tmpl                    PowerShell interpreter, -ExecutionPolicy Bypass
 .chezmoiignore                        keeps README and the manifest source-only
 .gitattributes                        * text=auto eol=lf
-winget-packages.json                  32 packages; read by script 01, never deployed
+winget-packages.json                  33 packages; read by script 01, never deployed
 
 dot_config/powershell/profile.ps1     mise activation; the real profile
 dot_config/husky/init.sh              git hooks get mise on PATH

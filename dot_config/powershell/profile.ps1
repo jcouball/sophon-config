@@ -43,7 +43,11 @@ function Update-WingetManifest {
     #     welcome window mid-run, and was one of the packages that stalled a bulk
     #     upgrade on sophon. Cause unknown. Install it by hand when wanted:
     #     `winget install Warp.Warp`. Revisit if the installer improves.
-    $skip = @('Warp.Warp')
+    #   Microsoft.Outlook -- "new Outlook", an Appx that Windows installs itself;
+    #     it predates this repo by a year. Inbox components are Windows to own,
+    #     per "Deliberately not managed" in the README, and recording it would
+    #     make a rebuild install it deliberately.
+    $skip = @('Warp.Warp', 'Microsoft.Outlook')
 
     # Keep the original bytes. Anything that leaves the package set unchanged has
     # to restore them exactly: script 01 re-runs on a sha256 of this file, and a
