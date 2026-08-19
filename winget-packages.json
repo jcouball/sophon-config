@@ -1,6 +1,6 @@
 {
   "$schema": "https://aka.ms/winget-packages.schema.2.0.json",
-  "CreationDate": "2026-08-10T11:41:37.93-07:00",
+  "CreationDate": "2026-08-19T08:00:34.343-07:00",
   "Sources": [
     {
       "Packages": [
@@ -14,10 +14,10 @@
           "PackageIdentifier": "Microsoft.VCRedist.2010.x64"
         },
         {
-          "PackageIdentifier": "Symless.Synergy"
+          "PackageIdentifier": "Google.Chrome"
         },
         {
-          "PackageIdentifier": "Google.Chrome"
+          "PackageIdentifier": "Symless.Synergy"
         },
         {
           "InitialOverrideArguments": "--wait --quiet --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended",
@@ -37,6 +37,9 @@
         },
         {
           "PackageIdentifier": "Microsoft.WindowsSDK.10.0.26100"
+        },
+        {
+          "PackageIdentifier": "Anthropic.ClaudeCode"
         },
         {
           "PackageIdentifier": "Microsoft.OneDrive"
@@ -64,6 +67,9 @@
         },
         {
           "PackageIdentifier": "Microsoft.DotNet.Native.Runtime"
+        },
+        {
+          "PackageIdentifier": "Microsoft.Outlook"
         },
         {
           "PackageIdentifier": "Microsoft.PowerShell"

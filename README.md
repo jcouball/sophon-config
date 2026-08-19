@@ -80,12 +80,13 @@ back into the repo in the same sitting.
 
 ```powershell
 winget install <id>
-winget export -o (chezmoi source-path)\winget-packages.json
+Update-WingetManifest
 chezmoi cd; git commit -am "Add <id>"; git push
 ```
 
-Then strip the deliberate exclusions, which `winget export` keeps re-adding — the
-snippet is in the header of `run_onchange_01_winget_install.ps1.tmpl`. Currently
+`Update-WingetManifest` is a function in the managed PowerShell profile. It
+rewrites `winget-packages.json` from what is actually installed and strips the
+deliberate exclusions, which `winget export` keeps re-adding. Currently
 excluded: **`Warp.Warp`**, whose installer takes an extraordinarily long time and
 opens a welcome window mid-provisioning. Install it by hand when wanted.
 
@@ -93,7 +94,7 @@ opens a welcome window mid-provisioning. Install it by hand when wanted.
 
 ```powershell
 winget uninstall --id <id> --exact --purge
-winget export -o (chezmoi source-path)\winget-packages.json
+Update-WingetManifest
 chezmoi cd; git commit -am "Remove <id>"; git push
 ```
 
