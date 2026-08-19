@@ -32,8 +32,7 @@ function Update-WingetManifest {
     param([string]$Path = (Join-Path (chezmoi source-path) 'winget-packages.json'))
 
     # Windows PowerShell 5.1 emits a different JSON layout and a UTF-8 BOM, which
-    # rewrites all 114 lines of the manifest and flips script 01's hash for no
-    # reason. Verified, not theoretical.
+    # rewrites the whole manifest. Verified, not theoretical.
     if ($PSVersionTable.PSEdition -ne 'Core') {
         Write-Error 'Run this in pwsh 7 -- 5.1 reformats the whole manifest and adds a BOM.'
         return
@@ -46,31 +45,46 @@ function Update-WingetManifest {
     #     `winget install Warp.Warp`. Revisit if the installer improves.
     $skip = @('Warp.Warp')
 
-    $before = if (Test-Path $Path) { Get-Content $Path -Raw | ConvertFrom-Json }
-    $was    = if ($before) { @($before.Sources[0].Packages.PackageIdentifier) } else { @() }
+    # Keep the original bytes. Anything that leaves the package set unchanged has
+    # to restore them exactly: script 01 re-runs on a sha256 of this file, and a
+    # rewrite differing only in CreationDate or line endings still flips it.
+    $original = if (Test-Path $Path) { Get-Content $Path -Raw } else { $null }
+    $was = if ($original) {
+        @(($original | ConvertFrom-Json).Sources[0].Packages.PackageIdentifier)
+    } else { @() }
 
     winget export -o $Path --disable-interactivity | Out-Null
-    if ($LASTEXITCODE -ne 0) { Write-Error "winget export failed (exit $LASTEXITCODE)"; return }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "winget export failed (exit $LASTEXITCODE)"
+        if ($original) { [IO.File]::WriteAllText($Path, $original) }
+        return
+    }
 
+    # Sorted because winget's export order is not stable -- two exports of an
+    # unchanged machine can differ, which is a diff to review and a re-run of
+    # script 01 for nothing.
     $json = Get-Content $Path -Raw | ConvertFrom-Json
     $json.Sources[0].Packages = @(
-        $json.Sources[0].Packages | Where-Object { $_.PackageIdentifier -notin $skip }
+        $json.Sources[0].Packages |
+            Where-Object { $_.PackageIdentifier -notin $skip } |
+            Sort-Object PackageIdentifier
     )
-    $now = @($json.Sources[0].Packages.PackageIdentifier)
-
-    # CreationDate is stamped fresh by every export. Left alone it changes the
-    # file -- and so script 01's manifest hash -- even when nothing was installed,
-    # re-running the whole 33-package import for nothing.
+    $now   = @($json.Sources[0].Packages.PackageIdentifier)
     $delta = Compare-Object -ReferenceObject $was -DifferenceObject $now
-    if ($before -and -not $delta) { $json.CreationDate = $before.CreationDate }
 
-    $json | ConvertTo-Json -Depth 10 | Set-Content $Path -Encoding utf8
-
-    if ($delta) {
-        $delta | ForEach-Object {
-            '{0} {1}' -f ($_.SideIndicator -replace '=>', 'added:' -replace '<=', 'gone: '), $_.InputObject
-        }
-        Write-Host 'Commit the manifest: chezmoi cd; git commit -am "..."; git push'
+    if (-not $delta -and $original) {
+        [IO.File]::WriteAllText($Path, $original)
+        Write-Host 'manifest already matches the machine'
+        return
     }
-    else { Write-Host 'manifest already matches the machine' }
+
+    # LF, no BOM, trailing newline. .gitattributes normalises this file to LF, so
+    # Set-Content's CRLF would rewrite all 120 line endings on every run.
+    $text = (($json | ConvertTo-Json -Depth 10) -replace "`r`n", "`n").TrimEnd("`n") + "`n"
+    [IO.File]::WriteAllText($Path, $text)
+
+    $delta | ForEach-Object {
+        '{0} {1}' -f ($_.SideIndicator -replace '=>', 'added:' -replace '<=', 'gone: '), $_.InputObject
+    }
+    Write-Host 'Commit the manifest: chezmoi cd; git commit -am "..."; git push'
 }
