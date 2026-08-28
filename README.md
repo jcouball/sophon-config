@@ -270,8 +270,17 @@ Verify **outcomes, not exit codes**. A script returning zero has proved nothing:
 mise ls --current          # 7 tools, none "(missing)"
 Test-Path 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC'
 $env:JAVA_HOME             # populated, in a NEW shell
+cmd /c "cat --version"     # resolves - spawned Unix tools work outside Git Bash (script 08)
+[Environment]::GetEnvironmentVariables('User').Keys -like 'MISE_*_VERSION'   # empty (script 09)
+(Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run').Warp[0]   # odd = vetoed (script 10)
 chezmoi status             # empty
 ```
+
+Two of those deserve a word. Script 09 is a designed no-op on a clean VM — its
+check confirms nothing crept in, not that anything was deleted. Script 10's
+check is the interesting one here: it proves the Warp veto is **pre-seeded
+before Warp is ever installed**, which is the scenario the script exists for
+and the one an already-configured machine cannot test.
 
 See [Certification](#certification) for why this exists and what it found.
 
@@ -374,6 +383,9 @@ AppData/Roaming/topgrade.toml         update policy - NOT dot_config, see below
   run_once_after_05_terminal_default_profile.ps1   point Terminal at pwsh 7
   run_onchange_after_06_ruby_devkit.ps1.tmpl       MSYS2 toolchain for native gems
   run_once_after_07_mise_shims_path.ps1            shims on user PATH, for cmd.exe
+  run_once_after_08_git_unix_tools_path.ps1        Git's usr\bin on user PATH, for spawned Unix tools
+  run_once_after_09_remove_stale_mise_version_pins.ps1   delete persisted MISE_*_VERSION env vars
+  run_once_after_10_disable_warp_autostart.ps1     veto Warp's run-at-sign-in registration
 ```
 
 Two scripts share the number `02` because they are one job: making PowerShell
@@ -422,6 +434,12 @@ winget install Warp.Warp --source winget
 Warp's shell preference cannot be scripted — see
 [Deliberately not managed](#deliberately-not-managed).
 
+Warp's installer also registers it to launch at every sign-in. Script 10 vetoes
+that the way Task Manager's "Disable" does — a `StartupApproved` flag Explorer
+honours over the Run entry itself — so the veto survives Warp updates, and is
+pre-seeded on a rebuild so a later hand-install stays quiet. Launching Warp by
+hand is unaffected.
+
 | Shell | Use it for |
 | --- | --- |
 | **PowerShell 7** (`pwsh`) | **Primary.** Everything here. `winget install Microsoft.PowerShell` |
@@ -444,6 +462,12 @@ so this is not optional and cannot be replaced by shims. PowerShell only.
 07. Real `.exe` files that re-dispatch through mise, so anything that reads
 `PATH` finds them — cmd.exe, a 5.1 window whose policy is locked down, a GUI app
 launched from Explorer. It resolves tools; it exports nothing.
+
+Script 08 uses the same channel to append Git for Windows' `usr\bin`, so
+spawned Unix tools (`cat`, `false`, `sleep` — process_executer's spec suite
+lives on these) resolve outside Git Bash too. The persisted user PATH is the
+*only* channel that reaches a `-NoProfile` shell — and Claude Code in VS Code
+runs every command in one, so neither activation nor the profile can help it.
 
 | Shell | Tools via | Why |
 | --- | --- | --- |
@@ -771,3 +795,10 @@ unreachable objects, so the old commit may remain fetchable by SHA afterwards.
 - **`$PSVersionTable.PSEdition`** is the thing to branch on — `Desktop` for 5.1,
   `Core` for 7+. Version numbers alone require comparison; the edition is what
   determines behaviour.
+- **`MISE_*_VERSION` environment variables outrank `config.toml`.** mise treats
+  them as its highest-precedence pin, so one persisted in the user environment
+  overrides layer 3 machine-wide — and Explorer hands the value to everything it
+  launches until the next sign-in, even after the registry entry is gone. It
+  presents as the wrong runtime version with nothing saying why; `mise ls
+  <tool>` names the winning source. Script 09 deletes any it finds. Never
+  `setx` one.
