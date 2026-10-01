@@ -1,11 +1,14 @@
 {
   "$schema": "https://aka.ms/winget-packages.schema.2.0.json",
-  "CreationDate": "2026-08-19T09:32:59.224-07:00",
+  "CreationDate": "2026-09-11T05:59:29.871-07:00",
   "Sources": [
     {
       "Packages": [
         {
           "PackageIdentifier": "AgileBits.1Password"
+        },
+        {
+          "PackageIdentifier": "Anthropic.Claude"
         },
         {
           "PackageIdentifier": "Anthropic.ClaudeCode"
@@ -21,6 +24,9 @@
         },
         {
           "PackageIdentifier": "jdx.mise"
+        },
+        {
+          "PackageIdentifier": "Microsoft.365Copilot"
         },
         {
           "PackageIdentifier": "Microsoft.AppInstaller"
@@ -113,5 +119,5 @@
       }
     }
   ],
-  "WinGetVersion": "1.29.280"
+  "WinGetVersion": "1.29.290"
 }
