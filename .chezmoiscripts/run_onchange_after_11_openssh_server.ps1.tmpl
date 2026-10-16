@@ -1,0 +1,535 @@
+# Serve SSH on the LAN, so another machine can run commands here.
+#
+# Windows ships its own OpenSSH server as an optional capability, not a winget
+# package, so the manifest cannot install it and this script does. It also
+# restricts the server, because sessions log in as james, who is an
+# administrator, and Windows does not filter an administrator's token for a key
+# login. Every SSH session therefore runs with full admin rights. The limits:
+#
+#   - Keys only, from one file. sshd_config comes from this repo, and allows
+#     publickey alone, so nothing lets a client in without a line in the file
+#     this script writes.
+#   - LAN only. The firewall rule answers on Private networks, from the local
+#     subnet.
+#   - No forwarding. sshd_config sets DisableForwarding, which no key option
+#     can override, and each key line's options must still be exactly
+#     `restrict` or `restrict,pty`; this script rejects any other. The key
+#     filter is the second check, so a hand edit of the server's key file
+#     cannot switch forwarding on either.
+#
+# Each client's private key should have a passphrase, so a copy of the key
+# file is useless on its own. Nothing here can enforce that.
+#
+# Every session runs the ZIP pwsh from .chezmoiexternal.toml.tmpl, not the
+# MSIX build on PATH, which a service cannot start. That pwsh reads the same
+# $PROFILE stub as the interactive one, so a session gets mise activation,
+# JAVA_HOME and the rest. Each version unpacks into its own folder,
+# ~/.local/opt/pwsh-<version>, with the version from .chezmoidata.toml. The
+# version is part of this script, so a bump re-runs it: it points sshd at the
+# new folder once that pwsh starts, keeps the folder it pointed at before, and
+# deletes older ones no session uses. The previous folder goes on the next
+# run; see step 7.
+#
+# THE `after_` ATTRIBUTE IS REQUIRED. DefaultShell points at ~/.local/opt,
+# which chezmoi writes as an external, and .chezmoiscripts/ sorts before .local/
+# (.c < .l). Without after_, a rebuild points sshd at a file that does not exist
+# yet, and every SSH login fails.
+#
+# EXIT 1, NOT RETURN, WHEN SOMETHING IS MISSING. chezmoi records a run_onchange
+# script as done when it exits 0, and does not run it again until its rendered
+# contents change. A warning followed by `return` would mark a half-configured
+# server as finished for good. Exiting 1 fails the apply and runs the script
+# again on the next one. Two exceptions only warn. An empty key file: its hash
+# is below, so adding a key re-runs the script anyway. And no Private network:
+# the script never changes the network category, so running it again cannot
+# fix that, and SSH works as soon as the LAN is marked Private.
+#
+# SSHD NEVER STAYS UP UNLOCKED. Locked means sshd runs the repo's sshd_config,
+# `sshd -T` confirms what that file is for, password authentication off for
+# every client and administrators' keys only from the file this script writes,
+# that key file is written and its ACL checked, and a running sshd has loaded
+# the file. Until all of that holds the firewall rule stays disabled. The config is copied, not checked: a check has to parse the file the
+# way sshd does and know every way sshd can let a client in, and both lists
+# are open-ended. Not even a LAN client can reach sshd until it is locked. It
+# starts once on a fresh install,
+# because that writes the host keys (and a default sshd_config, replaced in
+# step 4), and stops again once `sshd -t` accepts them. A running sshd uses
+# the config it read at start, so a running sshd older than the file is
+# restarted before the script counts the server as locked. If anything fails
+# before then, the finally block stops sshd and sets it to Manual, so it does
+# not come back at boot either.
+#
+# A SERVER THAT WAS ALREADY LOCKED KEEPS RUNNING. The script records, before it
+# does anything else, whether sshd is running a locked config. If so, a failure
+# later in the run leaves it running: its config is the one that passed, since
+# a new one is only loaded after it passes too. Otherwise a failed re-run, such
+# as a key change applied over SSH, would lock the client out until someone is
+# at the machine. The config the script last applied is kept beside the live
+# one as sshd_config.applied, and a server running that copy counts as locked
+# too. Without it, a change to the repo's file would make the server count as
+# unlocked while it still runs the last good one, and a rejected replacement
+# would then stop it instead of leaving it as it was.
+#
+# SSHD RESTARTS ONLY FOR A NEW CONFIG, AND LAST. A restart does not end open
+# sessions: each connection has its own sshd process, which outlives the
+# service (seen on sophon, OpenSSH for Windows 9.5: the connection running
+# the apply survived the restart and kept its old config and shell). So a
+# restart changes what new connections get, and an apply over SSH finishes.
+# It still comes last, after the keys, the default shell and the folder
+# cleanup, so that a restart that fails and rolls the config back leaves
+# everything else done. A key change needs no restart: sshd reads the key
+# file on every login.
+#
+# NEEDS ELEVATION: it installs a capability and writes under C:\ProgramData and
+# HKLM. The rebuild already runs elevated.
+#
+# NOTE: include resolves against the SOURCE directory.
+# key file hash: {{ include "administrators_authorized_keys" | sha256sum }}
+# sshd_config hash: {{ include "sshd_config" | sha256sum }}
+
+$ErrorActionPreference = 'Stop'
+
+$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$principal = New-Object Security.Principal.WindowsPrincipal($identity)
+if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Write-Warning ('Script 11 needs an elevated terminal: it installs the OpenSSH ' +
+                   'capability and writes under C:\ProgramData and HKLM. Run ' +
+                   '`chezmoi apply` again from an elevated terminal.')
+    exit 1
+}
+
+$pwshDir = Join-Path $HOME '.local\opt\pwsh-{{ .sshdPwsh.version }}'
+$pwsh = Join-Path $pwshDir 'pwsh.exe'
+$sshd = Join-Path $env:SystemRoot 'System32\OpenSSH\sshd.exe'
+$config = Join-Path $env:ProgramData 'ssh\sshd_config'
+$configSource = Join-Path '{{ .chezmoi.sourceDir }}' 'sshd_config'
+$configApplied = "$config.applied"
+$sshdLog = Join-Path $env:TEMP 'sshd-check.log'
+$hostKey = Join-Path $env:ProgramData 'ssh\ssh_host_ed25519_key'
+
+# sshd -T -C needs a client address, which only matters to a `Match Address`
+# block. sophon's own address on a Private network stands in for a client on
+# the same subnet, skipping 169.254 addresses, which no client uses. With no
+# usable address, the placeholder stands in, and a Match Address block written
+# for the real LAN goes untested. Set in step 0.
+$probeAddress = '192.168.1.2'
+
+# Runs sshd with the given arguments and returns its standard output, with
+# its log sent to a file instead of stderr. THE LOG FILE IS NOT OPTIONAL: when
+# sshd rejects a config, `sshd -t` and `sshd -T` never return if stderr is a
+# pipe, which it is under chezmoi and over SSH. Seen on sophon with OpenSSH
+# for Windows 9.5: every form that left stderr a pipe hung, `-E` returned
+# 255 at once. Get-SshdComplaint reads the log for an error message. Continue,
+# not Stop, because Windows PowerShell 5.1 turns anything a native command
+# does write to a redirected stderr into a terminating error under Stop.
+function Invoke-Sshd([string[]]$sshdArgs) {
+    Remove-Item $sshdLog -ErrorAction SilentlyContinue
+    $ErrorActionPreference = 'Continue'
+    & $sshd -E $sshdLog @sshdArgs 2>$null
+}
+function Get-SshdComplaint {
+    if (Test-Path $sshdLog) { (Get-Content $sshdLog) -join "`n" } else { '' }
+}
+
+# The configuration sshd will actually use, not the text of the file. sshd
+# takes the first value it reads for a keyword, and a value inside a Match
+# block applies only to that block. Checks the global settings, which every
+# other account gets, and the settings for this account after Match blocks.
+# The server's config, or $file in its place.
+function Test-PasswordsOff([string]$file) {
+    $fileArgs = if ($file) { @('-f', $file) } else { @() }
+    $global = Invoke-Sshd (@('-T') + $fileArgs)
+    if ($LASTEXITCODE -ne 0) { return $false }
+    $forUser = Invoke-Sshd (@('-T', '-C', "user=$env:USERNAME,host=client,addr=$probeAddress") + $fileArgs)
+    if ($LASTEXITCODE -ne 0) { return $false }
+    return ($global -contains 'passwordauthentication no') -and
+           ($forUser -contains 'passwordauthentication no')
+}
+
+# Administrators' keys must come from the file this script writes. The
+# default config sends them there with a `Match Group administrators` block;
+# without it, sshd reads ~/.ssh/authorized_keys, which nothing here filters or
+# revokes. The server's config, or $file in its place.
+function Test-AdminKeyFile([string]$file) {
+    $fileArgs = if ($file) { @('-f', $file) } else { @() }
+    $forUser = Invoke-Sshd (@('-T', '-C', "user=$env:USERNAME,host=client,addr=$probeAddress") + $fileArgs)
+    if ($LASTEXITCODE -ne 0) { return $false }
+    $files = @(($forUser | Where-Object { $_ -like 'authorizedkeysfile *' }) -split '\s+' |
+               Select-Object -Skip 1)
+    if ($files.Count -ne 1) { return $false }
+    # The managed file, as sshd prints it or expanded. Not any path ending in
+    # the same name: ~/.ssh/administrators_authorized_keys is not this file.
+    $file = $files[0] -replace '\\', '/'
+    $expanded = (Join-Path $env:ProgramData 'ssh\administrators_authorized_keys') -replace '\\', '/'
+    return $file -eq '__PROGRAMDATA__/ssh/administrators_authorized_keys' -or $file -eq $expanded
+}
+
+# Whether the server's sshd_config has the same text as $path. Line endings
+# are ignored: the repo file is LF, sshd accepts either, and an editor on
+# Windows may save CRLF. Case is not ignored; -eq would.
+function Test-ConfigEquals([string]$path) {
+    if (-not (Test-Path $config) -or -not (Test-Path $path)) { return $false }
+    $server = [IO.File]::ReadAllText($config) -replace "`r`n", "`n"
+    $other = [IO.File]::ReadAllText($path) -replace "`r`n", "`n"
+    return $server -ceq $other
+}
+
+# Whether sshd accepts the config and host keys: the server's config, or $file
+# in its place. Get-SshdComplaint says why not.
+function Test-SshdConfig([string]$file) {
+    $sshdArgs = @('-t'); if ($file) { $sshdArgs += '-f', $file }
+    Invoke-Sshd $sshdArgs | Out-Null
+    return $LASTEXITCODE -eq 0
+}
+
+# Whether a running sshd started before sshd_config last changed, and so still
+# runs the old config. $false when sshd is not running.
+function Test-SshdStale {
+    $service = Get-CimInstance Win32_Service -Filter "Name='sshd'"
+    if (-not $service -or $service.State -ne 'Running') { return $false }
+    $started = (Get-Process -Id $service.ProcessId).StartTime
+    return $started -lt (Get-Item $config).LastWriteTime
+}
+
+$locked = $false
+$wasLocked = $false
+$rejected = @()
+try {
+    # 0. Whether sshd is already running a locked config, before anything else
+    #    can fail. See the header. The probe address comes first because the
+    #    checks use it; trouble reading the network only leaves the placeholder.
+    $networkBlocked = $false
+    try {
+        # The firewall rule matches nothing unless a network is Private.
+        # Windows classes any network you never told it was trusted as Public,
+        # and a domain network as DomainAuthenticated, and the rule answers on
+        # neither. The script warns at the end and still exits 0; see the
+        # header.
+        $privateNets = @(Get-NetConnectionProfile | Where-Object { $_.NetworkCategory -eq 'Private' })
+        $networkBlocked = $privateNets.Count -eq 0
+        if (-not $networkBlocked) {
+            $ip = Get-NetIPAddress -AddressFamily IPv4 -InterfaceIndex $privateNets.InterfaceIndex `
+                      -ErrorAction SilentlyContinue |
+                  Where-Object { $_.IPAddress -notlike '169.254.*' } | Select-Object -First 1
+            if ($ip) { $probeAddress = $ip.IPAddress }
+        }
+    } catch {
+        Write-Warning "Could not read the network profiles: $_"
+    }
+    try {
+        $service = Get-Service sshd -ErrorAction SilentlyContinue
+        $wasLocked = [bool]$service -and $service.Status -eq 'Running' -and (Test-Path $config) -and
+                     -not (Test-SshdStale) -and
+                     ((Test-ConfigEquals $configSource) -or (Test-ConfigEquals $configApplied)) -and
+                     (Test-PasswordsOff) -and (Test-AdminKeyFile)
+    } catch {
+        $wasLocked = $false
+    }
+
+    # 1. The shell sessions will run. Prove it starts before pointing sshd at
+    #    it: a DefaultShell that cannot start fails every login with nothing in
+    #    the client's output to say why.
+    if (-not (Test-Path $pwsh)) {
+        throw ("$pwsh does not exist. chezmoi writes it from .chezmoiexternal.toml.tmpl " +
+               'before after_ scripts run - check that the external downloaded.')
+    }
+    $pwshVersion = & $pwsh -NoProfile -NonInteractive -Command '$PSVersionTable.PSVersion.ToString()'
+    if ($LASTEXITCODE -ne 0 -or -not $pwshVersion) {
+        throw "$pwsh exists but did not run (exit $LASTEXITCODE). Not pointing sshd at it."
+    }
+    Write-Host "sessions will run pwsh $pwshVersion from $pwsh"
+
+    # 2. The server. Get-WindowsCapability names it OpenSSH.Server~~~~0.0.1.0
+    #    today; the wildcard survives a version change in that suffix.
+    $capability = Get-WindowsCapability -Online -Name 'OpenSSH.Server*' | Select-Object -First 1
+    if (-not $capability) { throw 'No OpenSSH.Server capability offered by this Windows build.' }
+    # The install can need a Windows restart before the sshd service exists:
+    # the capability reports InstallPending and Add-WindowsCapability
+    # RestartNeeded. Stop here, before the firewall or sshd is touched.
+    $restartMessage = ("Restart Windows to finish installing $($capability.Name), then run " +
+                       '`chezmoi apply` again from an elevated terminal.')
+    if ($capability.State -eq 'InstallPending') { throw $restartMessage }
+    if ($capability.State -ne 'Installed') {
+        Write-Host "Installing $($capability.Name) ..."
+        $install = Add-WindowsCapability -Online -Name $capability.Name
+        if ($install.RestartNeeded) { throw $restartMessage }
+    } else {
+        Write-Host 'OpenSSH server already installed'
+    }
+    if (-not (Get-Service sshd -ErrorAction SilentlyContinue)) {
+        throw "$($capability.Name) is installed but there is no sshd service. $restartMessage"
+    }
+
+    # 3. The firewall, before the first start. The capability creates
+    #    OpenSSH-Server-In-TCP open on every profile; narrow it to Private
+    #    networks and the local subnet. Create it if an older install never
+    #    did. Unless sshd was already locked, the rule stays disabled until it
+    #    is, so no client can reach sshd while it runs the default config,
+    #    which allows passwords.
+    $rule = Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue
+    if (-not $rule) {
+        New-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -DisplayName 'OpenSSH Server (sshd)' `
+            -Direction Inbound -Protocol TCP -LocalPort 22 -Action Allow -Program $sshd `
+            -Enabled False | Out-Null
+    }
+    $ruleEnabled = if ($wasLocked) { 'True' } else { 'False' }
+    Set-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -Enabled $ruleEnabled -Profile Private -RemoteAddress LocalSubnet
+
+    # Narrowing one rule proves nothing if another also lets SSH in: any
+    # enabled inbound Allow rule for TCP port 22 (listed, Any, or in a range)
+    # that applies to sshd.exe, to the sshd service, or to every program. A manual Win32-OpenSSH
+    # install, for one, creates a rule named sshd, open on every profile. Rules
+    # for a Store app package, a service or an owner apply only to that
+    # package, service or owner; Windows has dozens with Any ports, so they are
+    # left out. This script names the other rules rather than changing rules
+    # it did not create.
+    #
+    # Each filter lookup is a CIM call, and sophon has over 150 of these rules,
+    # so the port filters come in one pipeline, keyed back to their rules by
+    # InstanceID, and only the rules on port 22 get the other two lookups.
+    $rules = @(Get-NetFirewallRule -Direction Inbound -Action Allow -Enabled True |
+               Where-Object { $_.Name -ne 'OpenSSH-Server-In-TCP' })
+    $ruleById = @{}
+    foreach ($r in $rules) { $ruleById[$r.InstanceID] = $r }
+    $onPort22 = @(foreach ($ports in @($rules | Get-NetFirewallPortFilter)) {
+        if (($ports.Protocol -in 'TCP', 'Any') -and @($ports.LocalPort | Where-Object {
+                $_ -eq 'Any' -or $_ -eq '22' -or
+                ($_ -match '^(\d+)-(\d+)$' -and [int]$Matches[1] -le 22 -and 22 -le [int]$Matches[2])
+            }).Count -gt 0) { $ruleById[$ports.InstanceID] }
+    })
+    $otherRules = @(foreach ($r in $onPort22) {
+        $app = $r | Get-NetFirewallApplicationFilter
+        $svc = $r | Get-NetFirewallServiceFilter
+        $anyProgram = $app.Program -eq 'Any' -and -not $app.Package -and $svc.Service -eq 'Any' -and -not $r.Owner
+        $sshdOnly = $app.Program -like '*\OpenSSH\sshd.exe' -or $svc.Service -eq 'sshd'
+        if ($anyProgram -or $sshdOnly) { $r }
+    })
+    if ($otherRules.Count -gt 0) {
+        throw ('Other inbound firewall rules also allow SSH, so it is not limited to the LAN. ' +
+               'Disable or remove them, then apply again: ' + ($otherRules.Name -join ', '))
+    }
+
+    # sshd writes its default sshd_config, and its host keys, on its first
+    # start, not at install. Start it for that and stop it as soon as `sshd -t`
+    # accepts both: the default config allows passwords. Waiting for `sshd -t`,
+    # not just for the files, means none is stopped half-written. A run that
+    # finds a file missing starts sshd again to create it.
+    if (-not (Test-Path $config) -or -not (Test-Path $hostKey)) {
+        Start-Service sshd
+        for ($i = 0; $i -lt 20; $i++) {
+            if ((Test-Path $config) -and (Test-Path $hostKey) -and (Test-SshdConfig)) { break }
+            Start-Sleep -Milliseconds 500
+        }
+        Stop-Service sshd
+        if (-not (Test-Path $config)) { throw "sshd started but $config never appeared." }
+        if (-not (Test-Path $hostKey)) { throw "sshd started but $hostKey never appeared." }
+        if (-not (Test-SshdConfig)) {
+            throw ("sshd -t rejects the files sshd wrote on its first start. Nobody has connected " +
+                   "yet, so delete $config and the ssh_host_* files beside it, then apply again.`n" +
+                   (Get-SshdComplaint))
+        }
+    }
+
+    # 4. The config, copied from the repo whenever the server's copy differs.
+    #    The file sshd reads is then the file in the repo, and nothing has to
+    #    be checked for what else it might allow. The repo's file is checked
+    #    completely before the server's is touched: `sshd -t -f` for syntax,
+    #    and `sshd -T -f` for what the file is for, passwords off for every
+    #    client and administrators' keys from the managed file alone. So a
+    #    bad commit never reaches the server, and no check after the copy
+    #    needs a rollback of its own. A server file that matches is checked
+    #    too, since the host keys beside it can break on their own. A server
+    #    file that does not match is replaced without being checked: it may
+    #    be corrupt, and the copy is the repair. The backup covers the one
+    #    failure left, a file that passes on its own but not in place.
+    if (-not (Test-SshdConfig $configSource)) {
+        throw ("sshd -t rejects the repo's sshd_config, so the server's file is unchanged:`n" +
+               (Get-SshdComplaint))
+    }
+    if (-not (Test-PasswordsOff $configSource)) {
+        throw ("sshd -T reports password authentication on for the repo's sshd_config, so the " +
+               "server's file is unchanged. Fix sshd_config in the repo.")
+    }
+    if (-not (Test-AdminKeyFile $configSource)) {
+        throw ("The repo's sshd_config does not take administrators' keys from " +
+               "administrators_authorized_keys alone, so the server's file is unchanged. Restore " +
+               "the ``Match Group administrators`` block to sshd_config in the repo.")
+    }
+    $configChanged = $false
+    if (Test-ConfigEquals $configSource) {
+        if (-not (Test-SshdConfig)) {
+            throw "sshd -t rejects $config or the host keys beside it:`n" + (Get-SshdComplaint)
+        }
+        Write-Host 'sshd_config matches the repo'
+    } else {
+        Copy-Item $config "$config.bak" -Force
+        Copy-Item $configSource $config -Force
+        if (-not (Test-SshdConfig)) {
+            Copy-Item "$config.bak" $config -Force
+            throw ("sshd -t rejected the repo's sshd_config in place, though it passed on its own; " +
+                   "restored $config.bak:`n" + (Get-SshdComplaint))
+        }
+        $configChanged = $true
+        Write-Host "sshd_config written from the repo (backup: $config.bak)"
+    }
+    # A running sshd keeps the config it read at start, so it has to restart
+    # when the file was just replaced, or is newer than the service for
+    # another reason. Decided here, done in step 8, after everything else:
+    # see the header. Copy-Item keeps the source's modification time, so the
+    # timestamp check alone misses a replacement from a checkout older than
+    # the service. A stopped sshd needs no restart: step 6 starts it, on the
+    # file as it is then.
+    $needsRestart = (Get-Service sshd).Status -eq 'Running' -and ($configChanged -or (Test-SshdStale))
+
+    # 5. The authorized keys. Admin accounts read this file, not ~/.ssh, and
+    #    sshd ignores it unless only SYSTEM and Administrators can reach it. The
+    #    ACL uses SIDs so it works on a non-English Windows.
+    #    Written as UTF-8 without a BOM: sshd does not parse a key line that
+    #    starts with one.
+    #    Written even when the source has no keys, or some lines are rejected.
+    #    Deleting a line from the repo is how a key is revoked, and skipping the
+    #    write would leave a revoked key authorized. Rejected lines are left
+    #    out, and the script fails at the end to name them.
+    #    The ACL is reset first: /inheritance:r keeps explicit entries already
+    #    on the file, and any entry beyond SYSTEM and Administrators makes sshd
+    #    ignore it. The result is checked, since icacls succeeding does not
+    #    prove that.
+    $source = Join-Path '{{ .chezmoi.sourceDir }}' 'administrators_authorized_keys'
+    $lines = @(Get-Content $source | Where-Object { $_ -match '^\s*[^#\s]' })
+    #    A key line is options, a key type and the key, so three tokens at
+    #    least. A truncated paste leaves `restrict,pty` or `restrict,pty
+    #    ssh-ed25519` behind; sshd would skip either without a word and the
+    #    client would be unable to log in, so both are rejected here.
+    $keys = @($lines | Where-Object {
+        $parts = $_.Trim() -split '\s+'
+        $parts.Count -ge 3 -and $parts[0] -in 'restrict', 'restrict,pty' -and $parts[1] -match '^(ssh-|ecdsa-|sk-)'
+    })
+    $rejected = @($lines | Where-Object { $_ -notin $keys })
+    $target = Join-Path $env:ProgramData 'ssh\administrators_authorized_keys'
+    $body = if ($keys.Count -gt 0) { ($keys -join "`n") + "`n" } else { '' }
+    [IO.File]::WriteAllText($target, $body, (New-Object Text.UTF8Encoding($false)))
+    & icacls.exe $target /reset | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "icacls could not reset the ACL on $target." }
+    & icacls.exe $target /inheritance:r /grant '*S-1-5-32-544:F' /grant '*S-1-5-18:F' | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "icacls could not restrict $target - sshd will ignore it." }
+    # Get-Acl lives in Microsoft.PowerShell.Security. Loaded from this
+    # interpreter's own folder, not by name: chezmoi passes on the PSModulePath
+    # of the pwsh 7 that started it, which puts pwsh's Core build of the module
+    # first, and script 02 records Windows PowerShell 5.1 failing to load that
+    # build for Get-ExecutionPolicy. The failure was not reproduced with pwsh
+    # 7.6.7, but a failure here would come after the keys are written.
+    Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security') -ErrorAction Stop
+    $allowed = 'S-1-5-32-544', 'S-1-5-18'
+    $extra = @((Get-Acl $target).GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) |
+               Where-Object { $_.IdentityReference.Value -notin $allowed })
+    if ($extra.Count -gt 0) {
+        throw ("$target is reachable by " + (($extra.IdentityReference.Value | Sort-Object -Unique) -join ', ') +
+               ' as well as SYSTEM and Administrators, so sshd will ignore it.')
+    }
+    if ($keys.Count -eq 0) {
+        Write-Warning ("No key lines in $source, so nobody can log in. Add a client's " +
+                       'public key (the file explains the format) and apply again.')
+    } else {
+        Write-Host "$($keys.Count) key(s) written to $target"
+    }
+
+    # 6. The default shell. Each connection's sshd process reads these once,
+    #    at login, so new connections start the new version at once with no
+    #    restart, and a connection open now keeps the old one for every
+    #    command it runs. The old value is kept for step 7.
+    $openssh = 'HKLM:\SOFTWARE\OpenSSH'
+    if (-not (Test-Path $openssh)) { New-Item -Path $openssh -Force | Out-Null }
+    $previousShell = (Get-ItemProperty -Path $openssh -Name DefaultShell -ErrorAction SilentlyContinue).DefaultShell
+    New-ItemProperty -Path $openssh -Name DefaultShell -Value $pwsh -PropertyType String -Force | Out-Null
+    New-ItemProperty -Path $openssh -Name DefaultShellCommandOption -Value '-c' -PropertyType String -Force | Out-Null
+    Write-Host "sshd default shell: $pwsh"
+
+    Set-Service -Name sshd -StartupType Automatic
+    if ((Get-Service sshd).Status -ne 'Running') { Start-Service sshd }
+
+    # 7. Old pwsh folders. New connections now start only $pwshDir, so earlier
+    #    versions, and the unversioned ~/.local/opt/pwsh from before the folders
+    #    carried a version, are needed only by connections already open.
+    #    The folder sshd pointed at when this run started is kept whatever its
+    #    state: a connection the client keeps open between commands
+    #    (ControlPersist, ten minutes idle in the README's client config) has
+    #    no pwsh running, so no file is locked, yet its next command starts the
+    #    shell its sshd process read at login. That folder goes on the next
+    #    run of this script, by which time no such connection is left. Each
+    #    older folder is deleted unless a session is still running it, which
+    #    an open file shows; deleting one in use would pull files from under a
+    #    running shell. One still in use stays until script 11 next runs.
+    $optDir = Join-Path $HOME '.local\opt'
+    $previousDir = if ($previousShell) { Split-Path $previousShell -Parent } else { '' }
+    foreach ($old in Get-ChildItem $optDir -Directory -ErrorAction SilentlyContinue) {
+        if ($old.Name -notmatch '^pwsh(-\d+\.\d+\.\d+)?$' -or $old.FullName -eq $pwshDir) { continue }
+        if ($old.FullName -eq $previousDir) {
+            Write-Host "keeping $($old.FullName) until the next run: a connection opened before this one may still start it"
+            continue
+        }
+        $busy = $false
+        foreach ($name in 'pwsh.exe', 'System.Management.Automation.dll') {
+            $file = Join-Path $old.FullName $name
+            if (-not (Test-Path $file)) { continue }
+            try { [IO.File]::Open($file, 'Open', 'ReadWrite', 'None').Dispose() } catch { $busy = $true }
+        }
+        if ($busy) {
+            Write-Host "keeping $($old.FullName): an SSH session is still running it"
+        } else {
+            try {
+                Remove-Item $old.FullName -Recurse -Force
+                Write-Host "removed $($old.FullName)"
+            } catch {
+                Write-Warning "could not remove $($old.FullName), left for the next run: $_"
+            }
+        }
+    }
+
+    # 8. The restart, if the config changed, then the lock. A restart that
+    #    fails leaves sshd stopped on the new file, so the backup goes back
+    #    and sshd is started on it before the failure is reported. Open
+    #    sessions, this one included, survive a restart; see the header.
+    if ($needsRestart) {
+        try {
+            Restart-Service sshd
+        } catch {
+            if ($configChanged) {
+                Copy-Item "$config.bak" $config -Force
+                Start-Service sshd -ErrorAction SilentlyContinue
+                throw "sshd did not restart on the repo's sshd_config; restored $config.bak and started it again. $_"
+            }
+            throw "sshd did not restart: $_"
+        }
+        Write-Host 'sshd restarted to load the new config'
+    }
+
+    # Locked: the config sshd runs is the repo's, sshd -T agrees with it, and
+    # the keys it reads are the ones just written. Only now does the firewall
+    # let anyone in, and only now is the config recorded as applied.
+    $locked = $true
+    Copy-Item $config $configApplied -Force
+    Set-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -Enabled True
+    Write-Host 'firewall: port 22 open to the local subnet on Private networks only'
+} catch {
+    Write-Warning "$_"
+    exit 1
+} finally {
+    if (-not $locked -and -not $wasLocked -and (Get-Service sshd -ErrorAction SilentlyContinue)) {
+        Stop-Service sshd -ErrorAction SilentlyContinue
+        Set-Service -Name sshd -StartupType Manual -ErrorAction SilentlyContinue
+        Write-Warning 'sshd stopped and set to Manual until the server is confirmed locked.'
+    }
+}
+
+if ($networkBlocked) {
+    Write-Warning ('No connected network is Private, so the firewall still blocks SSH. ' +
+                   'Mark the LAN Private: Set-NetConnectionProfile -InterfaceAlias <name> ' +
+                   '-NetworkCategory Private')
+}
+
+if ($rejected.Count -gt 0) {
+    Write-Warning ("Left out of the server's key file: these lines in $source have options " +
+                   "other than exactly restrict or restrict,pty, so they could allow forwarding. " +
+                   "Fix them (the file explains the format):`n" + ($rejected -join "`n"))
+    exit 1
+}

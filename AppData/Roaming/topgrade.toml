@@ -1,4 +1,5 @@
-# sophon (Windows 11). Companion to the macOS config in jcouball/dotfiles.
+# sophon (Windows 11). Companion to the macOS config in
+# jcouball/neuromancer-config.
 #
 # Same principle as the Mac: topgrade manages the system and core tools, never
 # the dependencies of individual software projects. That prevents a global
@@ -16,6 +17,7 @@ only = [
     "vscode",                 # editor extensions
     "chezmoi",                # pull sophon-config and re-apply
     "github_cli_extensions",
+    "custom_commands",        # [commands] below; topgrade runs them last
 ]
 
 # Deliberately NOT in the list:
@@ -28,3 +30,8 @@ only = [
 #
 #   cargo, npm, pip -- layer 4. Subordinate to whatever runtime mise installed;
 #            sweeping them independently can break that pairing.
+
+# topgrade runs each command as `pwsh -c "<command>"` on Windows, so $HOME
+# expands. Last means after the chezmoi step, so a pin pulled this run counts.
+[commands]
+"sshd pwsh drift" = '& "$HOME\.local\bin\sshd-pwsh-drift.ps1"'

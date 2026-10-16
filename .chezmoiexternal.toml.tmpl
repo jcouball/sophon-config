@@ -1,0 +1,27 @@
+# Files chezmoi downloads rather than stores. See "Install a tool neither
+# manager has" in the README.
+
+# The pwsh that sshd launches for every SSH session (script 11 points sshd's
+# DefaultShell here). It is NOT the interactive pwsh, which is the MSIX build
+# from the winget manifest and stays on PATH.
+#
+# A second copy exists because the MSIX build cannot be started by a Windows
+# service, and sshd is a service. The MSI build could be, but Microsoft ships no
+# MSI from PowerShell 7.7 on. The ZIP is the same binaries with no installer, at
+# a path with no spaces in it.
+#
+# Pinned and checksummed on purpose, like the mise runtimes. The version and
+# checksum live in .chezmoidata.toml. Weekly, topgrade runs
+# ~/.local/bin/sshd-pwsh-drift.ps1, which compares the version sshd runs with
+# the MSIX one and prints the bump when it falls behind.
+#
+# ONE FOLDER PER VERSION, NOT ONE FOLDER REPLACED IN PLACE. A running pwsh,
+# which is every SSH session, holds its files locked, so replacing them in place
+# could stop partway and break every login. A bump instead unpacks the new
+# version beside the old one, and script 11 switches sshd to it once it has
+# proved it starts. Script 11 then deletes old folders no session is using.
+[".local/opt/pwsh-{{ .sshdPwsh.version }}"]
+    type = "archive"
+    url = "https://github.com/PowerShell/PowerShell/releases/download/v{{ .sshdPwsh.version }}/PowerShell-{{ .sshdPwsh.version }}-win-x64.zip"
+    checksum.sha256 = "{{ .sshdPwsh.sha256 }}"
+    exact = true

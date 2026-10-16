@@ -1,8 +1,11 @@
 # Source-only files. Anything in the source root that does not begin with a dot
 # otherwise becomes a target and gets written to the home directory.
 #
-# winget-packages.json is read by run_onchange_01 via `include`; .chezmoiignore
-# only affects what is applied, not what templates can read.
+# winget-packages.json is read by run_onchange_01 via `include`, and
+# administrators_authorized_keys and sshd_config by run_onchange_after_11;
+# .chezmoiignore only affects what is applied, not what templates can read.
 winget-packages.json
+administrators_authorized_keys
+sshd_config
 README.md
 CLAUDE.md
