@@ -1,0 +1,35 @@
+# sshd_config for sophon. Managed: script 11 copies this file to
+# C:\ProgramData\ssh\sshd_config on an elevated `chezmoi apply`, and an edit
+# made there is overwritten by the next one. Change this file instead.
+#
+# Only what differs from sshd's own defaults, plus the authentication settings
+# stated so the file sshd reads says what is intended. Everything else keeps
+# the default of the sshd Windows ships, and follows it across updates.
+# README.md, "Remote access over SSH", has the reasoning.
+
+# Keys only. Sessions log in as an administrator, so the key file script 11
+# writes is the only way in: no passwords, no Kerberos, no host-based login, no
+# certificates. AuthenticationMethods makes that true whatever the per-method
+# settings say.
+AuthenticationMethods publickey
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+GSSAPIAuthentication no
+HostbasedAuthentication no
+TrustedUserCAKeys none
+AuthorizedPrincipalsFile none
+
+# No forwarding of any kind: ports, agent, X11, Unix sockets or tunnels. A
+# key line's `restrict` says the same, and no key option can override this.
+DisableForwarding yes
+
+# Windows' default, kept for accounts that are not administrators.
+AuthorizedKeysFile .ssh/authorized_keys
+
+Subsystem sftp sftp-server.exe
+
+# Administrators' keys come only from the file script 11 writes, which it
+# filters to `restrict` options. Windows' default has this block too.
+Match Group administrators
+    AuthorizedKeysFile __PROGRAMDATA__/ssh/administrators_authorized_keys

@@ -1,0 +1,28 @@
+# Public keys allowed to log in to sophon over SSH as james.
+#
+# Source-only: .chezmoiignore keeps it out of the home directory, and script 11
+# copies it to C:\ProgramData\ssh\administrators_authorized_keys. sshd reads
+# that file, not ~/.ssh/authorized_keys, for any account in the Administrators
+# group, and james is one.
+#
+# PUBLIC KEYS ONLY. This repo is public. The private half stays on the machine
+# that generated it and is never committed anywhere.
+#
+# One key per line, with these options in front of it:
+#
+#   restrict   no port, agent or X11 forwarding, no pty.
+#   pty        gives back the pty, so `ssh sophon` works by hand.
+#
+# Generate each key on its client WITH a passphrase. Follow "Authorize a Mac"
+# in the README: its commands refuse to make a key without one, and check the
+# result. The passphrase is what makes a copied key file useless. No from= address
+# restriction: the firewall already limits logins to the LAN, and from= would
+# lock a client out whenever its address changed.
+#
+# Add a line of this form below:
+#
+#   restrict,pty ssh-ed25519 AAAA... james@neuromancer to sophon
+#
+# The options must be exactly `restrict` or `restrict,pty`. Script 11 leaves
+# any other line out of the server's copy and fails the apply to name it, and
+# warns while this file has no key line in it.

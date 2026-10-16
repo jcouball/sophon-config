@@ -1,0 +1,10 @@
+# Template data. chezmoi passes these values to every template; this file is
+# never written to the home directory.
+
+# The pwsh ZIP that sshd runs. Change both values together; see "Bump sshd's
+# pwsh" in the README. .chezmoiexternal.toml.tmpl unpacks this version into
+# ~/.local/opt/pwsh-<version>, script 11 points sshd's DefaultShell at it, and
+# ~/.local/bin/sshd-pwsh-drift.ps1 compares it with the interactive MSIX pwsh.
+[sshdPwsh]
+    version = "7.6.7"
+    sha256 = "d2f952ebdbf24386cb8923553aa58e41a846db35a6155ea04c58142a4b16dbb7"

@@ -1,0 +1,86 @@
+# Warn when sshd's pwsh falls behind the interactive one.
+#
+# Two pwsh installs exist on purpose (see .chezmoiexternal.toml.tmpl): the MSIX
+# build from the winget manifest, which updates itself, and the pinned ZIP that
+# sshd launches, which changes only when someone edits the pin in
+# .chezmoidata.toml. Left alone, the ZIP misses every security fix the MSIX
+# build picks up, and nothing says so.
+#
+# topgrade runs this weekly, as a custom command after its chezmoi step (see
+# topgrade.toml), so drift shows up within a week. It is not a chezmoi script:
+# a `run_` script is always pending, so `chezmoi status` would never be empty.
+# It only warns. Drift is not a broken machine. It warns only when the ZIP is
+# older: the ZIP can be ahead when it was bumped for a fix the Store has not
+# shipped yet.
+#
+# It checks the pwsh sshd actually runs, read from sshd's DefaultShell, not the
+# pinned folder. After a bump, an unelevated apply such as topgrade's unpacks
+# the new version, but sshd keeps the old one until an elevated apply runs
+# script 11, and this says so. It starts that pwsh to read its version, which
+# also proves it runs.
+#
+# Following the MSIX version automatically was considered and rejected. It
+# needs the version at render time, before script 01 has installed the MSIX
+# build on a rebuild, and it would change the binary behind every admin SSH
+# login without a commit to show for it.
+
+$pinned = '{{ .sshdPwsh.version }}'
+
+$shell = (Get-ItemProperty 'HKLM:\SOFTWARE\OpenSSH' -ErrorAction SilentlyContinue).DefaultShell
+if (-not $shell) {
+    Write-Warning "sshd has no DefaultShell, so script 11 has not run. Run an elevated chezmoi apply."
+    return
+}
+if (-not (Test-Path $shell)) {
+    Write-Warning "sshd's DefaultShell, $shell, does not exist, so SSH logins will fail. Run an elevated chezmoi apply."
+    return
+}
+
+$zipVersion = & $shell -NoProfile -NonInteractive -Command '$PSVersionTable.PSVersion.ToString()'
+if ($LASTEXITCODE -ne 0 -or -not $zipVersion) {
+    Write-Warning "sshd's pwsh at $shell did not run (exit $LASTEXITCODE). SSH logins will fail."
+    return
+}
+# -as, not a cast: a failed cast here only writes an error and leaves a
+# string, and the comparisons below would then compare strings (7.10 < 7.9).
+$zipText = "$zipVersion".Trim()
+$zipVersion = $zipText -as [version]
+if (-not $zipVersion) {
+    Write-Warning "sshd's pwsh at $shell reported '$zipText', which is not a version. Not comparing."
+    return
+}
+
+if ("$zipVersion" -ne $pinned) {
+    Write-Warning ("sshd runs pwsh $zipVersion, but $pinned is pinned. Run an elevated " +
+                   "chezmoi apply, so script 11 switches sshd to it.")
+}
+
+$msix = Get-AppxPackage -Name 'Microsoft.PowerShell' |
+        Sort-Object { [version]$_.Version } |
+        Select-Object -Last 1
+if (-not $msix) {
+    Write-Host "sshd's pwsh is $zipVersion; no MSIX PowerShell installed to compare against."
+    return
+}
+
+# Appx versions carry a fourth field (7.6.7.0); compare the first three.
+$v = [version]$msix.Version
+$msixVersion = [version]::new($v.Major, $v.Minor, $v.Build)
+
+if ($zipVersion -eq $msixVersion) {
+    Write-Host "sshd's pwsh matches the interactive one ($zipVersion)"
+    return
+}
+if ($zipVersion -gt $msixVersion) {
+    Write-Host "sshd's pwsh ($zipVersion) is ahead of the interactive one ($msixVersion); nothing to bump."
+    return
+}
+
+$asset = "PowerShell-$msixVersion-win-x64.zip"
+Write-Warning (@(
+    "sshd's pwsh is $zipVersion; the interactive MSIX pwsh is $msixVersion."
+    'Bump .chezmoidata.toml (see "Bump sshd''s pwsh" in the README):'
+    "  version = `"$msixVersion`""
+    '  sha256 = the output of:'
+    "  gh release view v$msixVersion -R PowerShell/PowerShell --json assets --jq '.assets[] | select(.name == `"$asset`") | .digest | ltrimstr(`"sha256:`")'"
+) -join "`n")
