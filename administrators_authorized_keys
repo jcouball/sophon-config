@@ -26,3 +26,4 @@
 # The options must be exactly `restrict` or `restrict,pty`. Script 11 leaves
 # any other line out of the server's copy and fails the apply to name it, and
 # warns while this file has no key line in it.
+restrict,pty ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBW5Rmv/zZmN3d+2aXfVGjLJP+5sYOBaqwzSvXbPlALX james@neuromancer to sophon
