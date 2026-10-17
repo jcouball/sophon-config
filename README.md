@@ -125,6 +125,10 @@ winget pin list
 winget pin remove --id <id>
 ```
 
+Microsoft.Edge is pinned by script 12, because `winget upgrade --all` cannot
+upgrade the copy Windows installed and Edge Update keeps it current anyway.
+The script's header has the details.
+
 ### Layer 3 — language runtimes
 
 #### Upgrade a language version
@@ -691,6 +695,7 @@ dot_local/bin/sshd-pwsh-drift.ps1.tmpl   weekly, from topgrade: warn when sshd's
   run_once_after_09_remove_stale_mise_version_pins.ps1   delete persisted MISE_*_VERSION env vars
   run_once_after_10_disable_warp_autostart.ps1     veto Warp's run-at-sign-in registration
   run_onchange_after_11_openssh_server.ps1.tmpl    SSH server: keys only, LAN only, ZIP pwsh
+  run_once_after_12_winget_pin_edge.ps1            keep winget upgrade --all off Edge
 ```
 
 Two scripts share the number `02` because they are one job: making PowerShell
