@@ -11,13 +11,30 @@
 # The GUID is Windows Terminal's deterministic identifier for the PowerShell Core
 # profile: derived from the profile source and name, so it is the same on every
 # machine rather than something generated per-install.
+#
+# RUN_ONCHANGE, NOT RUN_ONCE. On a fresh machine Terminal has not generated its
+# pwsh profile when this script runs: either Terminal has never been opened, so
+# settings.json does not exist, or it was opened before script 01 installed
+# pwsh and has not regenerated its profiles since. Both cases are skipped below,
+# correctly, but a run_once script that skips is still recorded as done and
+# never looks again, so a rebuilt machine kept Windows PowerShell 5.1 as the
+# default until someone noticed (issue #4). Keying the script on a hash of
+# settings.json makes chezmoi run it again on the first apply after Terminal
+# has rewritten the file, which it does when it generates the pwsh profile.
+# The script is idempotent, so re-running it once the default is set costs one
+# line of output. The path is the target file in the home directory, so the
+# absolute path is correct here; contrast script 04, whose include resolves
+# against the source directory.
+{{ $settings := joinPath .chezmoi.homeDir "AppData/Local/Packages/Microsoft.WindowsTerminal_8wekyb3d8bbwe/LocalState/settings.json" -}}
+# settings.json hash: {{ if stat $settings }}{{ include $settings | sha256sum }}{{ else }}missing{{ end }}
 
 $settings = Join-Path $env:LOCALAPPDATA `
     'Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json'
 $pwshGuid = '{574e775e-4f2a-5b96-ac1e-a2962a402336}'
 
 if (-not (Test-Path $settings)) {
-    Write-Host 'Windows Terminal settings not found - skipping (Terminal may not have run yet).'
+    Write-Host ('Windows Terminal settings not found - skipping. Open Terminal once, ' +
+                'then `chezmoi apply` sets the default profile.')
     return
 }
 
@@ -38,7 +55,9 @@ if ($json.defaultProfile -eq $pwshGuid) {
 # without pwsh installed this GUID would name nothing and Terminal would fall
 # back with no explanation.
 if (-not ($json.profiles.list | Where-Object { $_.guid -eq $pwshGuid })) {
-    Write-Warning 'No PowerShell 7 profile in Windows Terminal yet - leaving defaultProfile alone.'
+    Write-Warning ('No PowerShell 7 profile in Windows Terminal yet - leaving defaultProfile ' +
+                   'alone. Open Terminal once so it generates the profile, then ' +
+                   '`chezmoi apply` sets the default.')
     return
 }
 
