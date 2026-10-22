@@ -5,3 +5,4 @@
 # only affects what is applied, not what templates can read.
 winget-packages.json
 README.md
+CLAUDE.md
