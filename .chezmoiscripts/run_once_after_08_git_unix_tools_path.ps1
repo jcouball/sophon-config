@@ -107,10 +107,15 @@ public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wP
 # Prove it the way the failure presented: a spawned process resolving `cat`
 # from PATH, no shell aliases in the way. Extend this process's PATH first -
 # the registry write is not visible to an already-running process.
+#
+# Collect the whole output before reading $LASTEXITCODE. `cat --version` prints
+# several lines, and a `Select-Object -First 1` in the pipeline would stop it
+# before cmd.exe exits, leaving $LASTEXITCODE unset and the success branch
+# unreachable (issue #3). The first line is picked out afterwards.
 $env:Path = $env:Path + ';' + $usrBin
-$out = & cmd.exe /c 'cat --version' 2>&1 | Select-Object -First 1 | ForEach-Object { "$_" }
+$out = @(& cmd.exe /c 'cat --version' 2>&1 | ForEach-Object { "$_" })
 if ($LASTEXITCODE -eq 0) {
-    Write-Host "cmd.exe now resolves cat: $out"
+    Write-Host "cmd.exe now resolves cat: $($out[0])"
 } else {
-    Write-Warning "cat.exe is in $usrBin but cmd.exe could not run it: $out"
+    Write-Warning "cat.exe is in $usrBin but cmd.exe could not run it: $($out -join ' ')"
 }
