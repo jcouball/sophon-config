@@ -72,6 +72,10 @@ found.
 
 Afterwards, by hand:
 
+- Open Windows Terminal once, then run `chezmoi apply` again. Terminal
+  generates its pwsh profile the first time it opens after pwsh is installed,
+  and script 05 cannot set the default profile before that exists. The second
+  apply does it; nothing else re-runs.
 - Warp if you want it, and Warp's own settings, which cannot be versioned.
 - Mark the LAN Private, or the firewall blocks SSH. Script 11 warns when no
   network is. In an elevated terminal, with the LAN adapter's name (`Ethernet`
@@ -688,7 +692,7 @@ dot_local/bin/sshd-pwsh-drift.ps1.tmpl   weekly, from topgrade: warn when sshd's
   run_once_02_powershell_profile_stubs.ps1         stubs at $PROFILE, wherever that is
   run_once_03_build_tools.ps1                      VS Build Tools C++ workload
   run_onchange_after_04_mise_install.ps1.tmpl      materialise the runtimes
-  run_once_after_05_terminal_default_profile.ps1   point Terminal at pwsh 7
+  run_onchange_after_05_terminal_default_profile.ps1.tmpl   point Terminal at pwsh 7
   run_onchange_after_06_ruby_devkit.ps1.tmpl       MSYS2 toolchain for native gems
   run_once_after_07_mise_shims_path.ps1            shims on user PATH, for cmd.exe
   run_once_after_08_git_unix_tools_path.ps1        Git's usr\bin on user PATH, for spawned Unix tools
@@ -729,8 +733,10 @@ Keep the two ideas separate: the **terminal** is the window, the **shell** is
 what runs in it.
 
 **Windows Terminal is the managed terminal.** It comes from the manifest, and
-script 05 points its `defaultProfile` at pwsh 7 — so a rebuilt machine lands in
-the right shell with no manual step.
+script 05 points its `defaultProfile` at pwsh 7. On a rebuild this lands one
+apply late: Terminal generates its pwsh profile only when opened after pwsh is
+installed, so the first apply skips the step, and the script is `run_onchange`
+on `settings.json` so the next apply after Terminal has been opened finishes it.
 
 **Warp is a personal preference, installed by hand.** It is deliberately
 excluded from the manifest (its installer is extremely slow and opens a welcome
