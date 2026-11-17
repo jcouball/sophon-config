@@ -19,7 +19,19 @@ $ErrorActionPreference = 'Stop'
 # that does not exist still lists every pin), so the check parses the table.
 # The \s anchors keep Microsoft.Edge.Beta, .Dev, and EdgeWebView2Runtime pins
 # from counting as the stable Edge pin.
-$pins = & winget pin list | Out-String
+#
+# The flags are not optional. On a machine that has never used winget
+# interactively, a bare `winget pin list` asks whether to accept the msstore
+# source's agreements and waits. Its output is captured here, so the question
+# is never shown and the apply stops with nothing on screen. The November 2026
+# certification run sat there until someone typed Y. --source winget keeps
+# msstore out of it, --accept-source-agreements answers the question, and
+# --disable-interactivity makes any other question an error and not a wait.
+$pins = & winget pin list --source winget --accept-source-agreements --disable-interactivity | Out-String
+if ($LASTEXITCODE -ne 0) {
+    Write-Warning "winget pin list failed (exit $LASTEXITCODE):`n$pins"
+    exit 1
+}
 if ($pins -match '\sMicrosoft\.Edge\s') {
     Write-Host 'Microsoft.Edge already pinned'
     exit 0
@@ -27,7 +39,7 @@ if ($pins -match '\sMicrosoft\.Edge\s') {
 
 # --source winget for the reason script 03 gives: a fresh image's msstore source
 # fails its certificate check and winget then refuses to pick a source.
-& winget pin add --id Microsoft.Edge --exact --source winget --accept-source-agreements
+& winget pin add --id Microsoft.Edge --exact --source winget --accept-source-agreements --disable-interactivity
 if ($LASTEXITCODE -ne 0) {
     Write-Warning "winget could not pin Microsoft.Edge (exit $LASTEXITCODE)."
     exit 1
