@@ -1,0 +1,670 @@
+# Install the shared MSYS2 toolchains and link every mise Ruby to one of them.
+#
+# A RubyInstaller Ruby needs an MSYS2 with gcc to build a native gem. Until
+# this script, the only one this repo managed lived inside the Ruby that
+# config.toml pins, put there by `ridk install`. Every other Ruby fell back to
+# C:\msys64, a copy that an old Ruby's `ridk install` had left behind and that
+# nothing recorded. See "Ruby native extensions" in the README for the history.
+#
+# WHAT IT BUILDS
+#
+#   ~\.local\opt\msys2\gcc14     one MSYS2 per gcc major version, each a
+#   ~\.local\opt\msys2\gcc15     complete installation with the same package
+#   ~\.local\opt\msys2\gcc16     list, as MSYS2 served it on a different day
+#   ~\.local\opt\msys2\cache     the downloaded base archive and packages
+#
+#   ...\mise\installs\ruby\<version>\msys64   a junction to one of them
+#
+# The pins are in .chezmoidata.toml, under [rubyToolchains].
+#
+# WHY ONE PER GCC VERSION. RubyInstaller builds each Ruby with the gcc that
+# MSYS2 shipped that week, and MSYS2 ships only the newest. A Ruby's headers
+# are tested against the gcc that built it and not against later ones, and a
+# gcc major version changes defaults: gcc 15 made C23 the default language,
+# which older headers and older gems were not written for. Giving each Ruby
+# the gcc major it was built with removes that variable. The Ruby says which
+# one that is, in RbConfig::CONFIG['CC_VERSION_MESSAGE'].
+#
+# WHY EACH IS A DATED SET. An old gcc cannot be added to today's MSYS2. In
+# September 2026 MSYS2 split gcc-libs into libgcc, libstdc++ and others, and
+# every library built since depends on the new names, which conflict with any
+# older gcc-libs. pacman refuses the combination outright. So a toolchain is
+# not "today's packages with gcc swapped": it is every UCRT64 package at the
+# newest version MSYS2 had published by one chosen day, a day on which that
+# gcc was current. MSYS2 publishes no such snapshots, but its server keeps old
+# package files and their dates, and ruby-toolchains-packages.sh assembles the
+# set from those. This also pins everything a gem links against, OpenSSL
+# included, where a rolling install would not.
+#
+# WHY A JUNCTION. RubyInstaller looks for MSYS2 in a fixed order
+# (iterate_msys_paths in ruby_installer/runtime/msys2_installation.rb):
+# $env:MSYS2_PATH, then <ruby>\msys64, then msys64 beside the Ruby, then
+# C:\msys64, then the registry. <ruby>\msys64 is the only one of those that
+# can differ per Ruby without an environment variable somebody has to set, so
+# that is where the link goes. A junction, not a symbolic link: creating a
+# junction needs no elevation and no Developer Mode.
+#
+# WHO MADE THE LINK MATTERS. A junction made from an ordinary, unelevated
+# session cannot be followed from an SSH session: there the path through it
+# does not exist, RubyInstaller moves on down its list, and the Ruby quietly
+# builds with C:\msys64 if there is one. The same junction made from an SSH
+# session, or from an elevated one, works everywhere. Found on the first real
+# apply: every link was correct, every Ruby resolved to its toolchain in a
+# normal terminal, and every one of them resolved to C:\msys64 over SSH.
+# Windows' sshd does not follow junctions that a non-administrator created.
+# So this script checks each link by looking through it and by its owner,
+# which is the Administrators group only when the link was made with
+# administrator rights. With those rights it makes again any link that fails
+# either check. Without them it cannot, so it warns, and a full run fails,
+# which leaves script 06 pending until the links are right. SSH is where most
+# test runs on this machine happen, so a link that works only locally is not
+# finished.
+#
+# WHO RUNS IT
+#
+#   - Script 06, on `chezmoi apply`, whenever the pins, the mise config or this
+#     file change. That run installs toolchains and links.
+#   - mise's postinstall hook (dot_config/mise/config.toml), after every
+#     `mise install`, with -LinkOnly. A Ruby installed for one test run is
+#     linked before anyone builds a gem with it. -LinkOnly downloads nothing,
+#     so a hook never turns a one-minute install into a ten-minute one.
+#   - A person or an agent, by hand, at any time. It is safe to rerun.
+#
+# It must run under Windows PowerShell 5.1 as well as pwsh 7: chezmoi's
+# interpreter is 5.1, and the hook uses 5.1 because the pwsh on PATH in an SSH
+# session is the MSIX alias, which a session may not be able to start. It
+# finds mise's Rubies by path, not through `mise`, which is not on PATH in an
+# SSH session either.
+#
+# -Root and -RubyRoot exist so a new pin can be tried somewhere else first:
+#
+#   & "$HOME\.local\bin\ruby-toolchains.ps1" -Root "$HOME\tc-test" -NoLink
+#
+# WHAT IT DOES NOT DO
+#
+#   - It does not upgrade a toolchain. Nothing runs `pacman -Syu` in one, and
+#     gcc is listed in IgnorePkg so that a stray one cannot move it. A
+#     toolchain changes when its pin changes. The MSYS-side build tools
+#     (autoconf, make, sed and so on) are the exception to the dating: they
+#     are the current ones on the day a toolchain is built.
+#   - It does not remove a toolchain whose pin was deleted, or C:\msys64.
+#   - It does not put any MSYS2 directory on PATH. `bash` on PATH stays the
+#     WSL launcher and Git's usr\bin stays the source of Unix tools (script
+#     08). RubyInstaller adds the linked toolchain to PATH itself, for the
+#     length of a gem build.
+
+param(
+    # Link Rubies to the toolchains that exist; install nothing.
+    [switch]$LinkOnly,
+    # Install toolchains; leave every Ruby alone.
+    [switch]$NoLink,
+    # Where the toolchains live.
+    [string]$Root = (Join-Path $HOME '.local\opt\msys2'),
+    # mise's directory of installed Rubies.
+    [string]$RubyRoot
+)
+
+# When pwsh 7 starts chezmoi, this Windows PowerShell inherits pwsh's
+# PSModulePath, finds pwsh's copies of its own modules first, and cannot load
+# them. Two real applies failed that way, on Get-FileHash and then on Get-Acl
+# ("the module could not be loaded"). It does not happen over SSH, which is why
+# the scratch tests passed. So put Windows PowerShell's own module directories
+# back, and for the two calls that already failed use .NET, which loads no
+# module at all.
+if ($PSVersionTable.PSEdition -eq 'Desktop') {
+    $env:PSModulePath = @(
+        (Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'WindowsPowerShell\Modules'),
+        (Join-Path $env:ProgramFiles 'WindowsPowerShell\Modules'),
+        (Join-Path $PSHOME 'Modules')
+    ) -join ';'
+}
+
+# The pins go into a single-quoted string, so an apostrophe in one is doubled.
+$pins = '{{ .rubyToolchains | toJson | replace "'" "''" }}' | ConvertFrom-Json
+
+$mingwPrefix = 'mingw-w64-ucrt-x86_64'
+# The only Ruby platform the toolchains can build for.
+$rubyArch = 'x64-mingw-ucrt'
+$markerName = '.toolchain.json'
+$failed = $false
+$linkedWithoutAdmin = $false
+
+if (-not $RubyRoot) {
+    $miseData = $env:MISE_DATA_DIR
+    if (-not $miseData) { $miseData = Join-Path $env:LOCALAPPDATA 'mise' }
+    $RubyRoot = Join-Path $miseData 'installs\ruby'
+}
+
+# Run one command line in a toolchain's login shell and return its exit code.
+# MSYSTEM selects the UCRT64 environment, the one an x64-mingw-ucrt Ruby uses.
+# The login shell builds its own PATH and ignores the Windows one, so nothing
+# installed on this machine can leak into a toolchain's build.
+function Invoke-Msys {
+    param([string]$Dir, [string]$Command)
+
+    $saved = $env:MSYSTEM, $env:CHERE_INVOKING
+    $env:MSYSTEM = 'UCRT64'
+    $env:CHERE_INVOKING = '1'
+    try {
+        # pacman and gpg write progress to stderr. Left alone, Windows
+        # PowerShell renders that as red error text on a successful install.
+        & (Join-Path $Dir 'usr\bin\bash.exe') -lc $Command 2>&1 |
+            ForEach-Object { Write-Host "    $_" }
+        return $LASTEXITCODE
+    } finally {
+        $env:MSYSTEM, $env:CHERE_INVOKING = $saved
+    }
+}
+
+function Read-Marker {
+    param([string]$Dir)
+
+    $path = Join-Path $Dir $markerName
+    if (-not (Test-Path $path)) { return $null }
+    try { return Get-Content $path -Raw | ConvertFrom-Json } catch { return $null }
+}
+
+# What the compiler in a toolchain says its version is, or '' with no compiler.
+function Get-GccVersion {
+    param([string]$Dir)
+
+    $gccExe = Join-Path $Dir 'ucrt64\bin\gcc.exe'
+    if (-not (Test-Path $gccExe)) { return '' }
+    return "$(& $gccExe -dumpfullversion)".Trim()
+}
+
+# A toolchain is current when its marker records the pinned date, the pinned
+# gcc and every pinned package, and the compiler still is that gcc. The marker
+# is written last, so a run that was interrupted leaves none and the next run
+# finishes the job.
+function Test-ToolchainCurrent {
+    param([string]$Dir, $Pin)
+
+    $marker = Read-Marker $Dir
+    if (-not $marker -or $marker.date -ne $Pin.date -or $marker.gcc -ne $Pin.version) { return $false }
+    # Asked every run, not trusted from the marker: it costs one process, and
+    # the marker cannot know what was done to the toolchain since.
+    if ((Get-GccVersion $Dir) -ne $Pin.version) { return $false }
+    foreach ($package in @($pins.packages.ucrt64) + @($pins.packages.msys)) {
+        if ($marker.packages -notcontains $package) { return $false }
+    }
+    return $true
+}
+
+# C:\Users\james\x as /c/Users/james/x, the form a program inside MSYS2 takes.
+function ConvertTo-MsysPath {
+    param([string]$Path)
+    return '/' + $Path.Substring(0, 1).ToLower() + $Path.Substring(2).Replace('\', '/')
+}
+
+# A string as one single-quoted word of a bash command line. An apostrophe
+# cannot appear inside single quotes, so each one closes the quotes, is written
+# escaped, and opens them again. A user name or a -Root can contain one.
+function ConvertTo-BashWord {
+    param([string]$Text)
+    return "'" + $Text.Replace("'", "'\''") + "'"
+}
+
+# Download the MSYS2 base archive once, for every toolchain this run creates,
+# and refuse it unless its checksum is the pinned one.
+function Get-BaseArchive {
+    $name = "msys2-base-x86_64-$($pins.msys2Base.version).sfx.exe"
+    $cache = Join-Path $Root 'cache'
+    $path = Join-Path $cache $name
+
+    if (-not (Test-Path $path)) {
+        New-Item -ItemType Directory -Force -Path $cache | Out-Null
+        $tag = $pins.msys2Base.version -replace '^(\d{4})(\d{2})(\d{2})$', '$1-$2-$3'
+        $url = "https://github.com/msys2/msys2-installer/releases/download/$tag/$name"
+        Write-Host "  Downloading $url"
+        # 5.1 offers TLS 1.0 unless told otherwise, and draws a progress bar
+        # that makes a download several times slower.
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $ProgressPreference = 'SilentlyContinue'
+        Invoke-WebRequest -Uri $url -OutFile "$path.partial" -UseBasicParsing
+        Move-Item "$path.partial" $path -Force
+    }
+
+    # .NET, not Get-FileHash, for the reason given at the top of this script.
+    $stream = [IO.File]::OpenRead($path)
+    try {
+        $sha = [Security.Cryptography.SHA256]::Create()
+        $actual = -join ($sha.ComputeHash($stream) | ForEach-Object { $_.ToString('x2') })
+    } finally {
+        $stream.Dispose()
+    }
+    if ($actual -ne $pins.msys2Base.sha256.ToLower()) {
+        Remove-Item $path -Force
+        throw "$name has SHA-256 $actual, not the pinned $($pins.msys2Base.sha256). Deleted it."
+    }
+    return $path
+}
+
+function Install-Toolchain {
+    param([string]$Major, $Pin)
+
+    $dir = Join-Path $Root "gcc$Major"
+
+    if (Test-ToolchainCurrent $dir $Pin) {
+        Write-Host "gcc$Major toolchain present (packages as of $($Pin.date), $dir)"
+        return
+    }
+
+    # A finished toolchain built for another date is not updated in place.
+    # Moving between dates means downgrading some packages and renaming
+    # others, which pacman may refuse halfway. Deleting a gigabyte that Rubies
+    # are linked to is also not something to do unasked.
+    $marker = Read-Marker $dir
+    if ($marker) {
+        $has = Get-GccVersion $dir
+        if ($marker.date -ne $Pin.date -or $marker.gcc -ne $Pin.version -or $has -ne $Pin.version) {
+            throw ("$dir was built as gcc $($marker.gcc) with the packages of $($marker.date) and its compiler " +
+                   "reports '$has'. The pin says gcc $($Pin.version) as of $($Pin.date). " +
+                   "Delete the folder and rerun; it is rebuilt at the same path.")
+        }
+    }
+
+    Write-Host "Building the gcc$Major toolchain in $dir ..."
+
+    if (-not (Test-Path (Join-Path $dir 'usr\bin\msys-2.0.dll'))) {
+        if (Test-Path $dir) {
+            throw "$dir exists but holds no MSYS2. Look at it, then delete it and rerun."
+        }
+        $archive = Get-BaseArchive
+        # The archive unpacks to a folder named msys64. Unpack beside the
+        # final place and move it in, so a half-unpacked tree is never found
+        # at a path this script would later take for an installation.
+        $stage = Join-Path $Root ".unpack-gcc$Major"
+        if (Test-Path $stage) { cmd /c rd /s /q "$stage" }
+        Write-Host "  Unpacking MSYS2 base $($pins.msys2Base.version)"
+        & $archive -y "-o$stage" | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Unpacking $archive failed (exit $LASTEXITCODE)." }
+        Move-Item (Join-Path $stage 'msys64') $dir
+        Remove-Item $stage -Force
+    }
+
+    # The first login shell in a new MSYS2 creates the pacman keyring. Later
+    # ones do nothing, so this is safe when finishing an interrupted run.
+    Write-Host '  First start (creates the pacman keyring on a new installation)'
+    if ((Invoke-Msys $dir 'true') -ne 0) { throw 'The MSYS2 login shell did not start.' }
+
+    Write-Host "  Installing the UCRT64 packages as of $($Pin.date)"
+    $helper = ConvertTo-BashWord (ConvertTo-MsysPath (Join-Path $PSScriptRoot 'ruby-toolchains-packages.sh'))
+    $cache = ConvertTo-BashWord (ConvertTo-MsysPath (Join-Path $Root 'cache\ucrt64'))
+    $names = @($pins.packages.ucrt64) -join ' '
+    if ((Invoke-Msys $dir "bash $helper $($Pin.date) $cache $names") -ne 0) {
+        throw ("Installing the packages as of $($Pin.date) failed. If a file is gone from MSYS2's server, " +
+               "see 'Add or move a gcc toolchain' in the README.")
+    }
+
+    # Hold gcc, so that a `pacman -Syu` somebody runs in here by hand cannot
+    # turn a gcc14 toolchain into something else.
+    $conf = Join-Path $dir 'etc\pacman.conf'
+    $hold = "IgnorePkg = $mingwPrefix-gcc $mingwPrefix-gcc-libs"
+    $text = [IO.File]::ReadAllText($conf)
+    if ($text -notmatch "(?m)^$([regex]::Escape($hold))\s*$") {
+        $text = $text -replace '(?m)^#?IgnorePkg\s*=.*$', $hold
+        # No BOM: pacman reads this file, not Windows.
+        [IO.File]::WriteAllText($conf, $text, (New-Object Text.UTF8Encoding $false))
+    }
+
+    Write-Host '  Installing the MSYS build tools'
+    $list = @($pins.packages.msys) -join ' '
+    if ((Invoke-Msys $dir "pacman -Sy --needed --noconfirm $list") -ne 0) {
+        throw 'pacman -S failed for the MSYS build tools.'
+    }
+
+    # Ask the compiler, not pacman: this is the claim the folder name makes.
+    $reported = Get-GccVersion $dir
+    if ($reported -ne $Pin.version -or -not $reported.StartsWith("$Major.")) {
+        throw "gcc in $dir reports '$reported', not the pinned $($Pin.version). Check the date in [rubyToolchains.gcc.$Major]."
+    }
+
+    $marker = [ordered]@{
+        date      = $Pin.date
+        gcc       = $reported
+        msys2Base = $pins.msys2Base.version
+        packages  = @($pins.packages.ucrt64) + @($pins.packages.msys)
+        built     = (Get-Date).ToString('yyyy-MM-dd')
+    }
+    $json = $marker | ConvertTo-Json
+    [IO.File]::WriteAllText((Join-Path $dir $markerName), $json, (New-Object Text.UTF8Encoding $false))
+    Write-Host "gcc$Major toolchain built (gcc $reported, packages as of $($Pin.date))"
+}
+
+# The toolchains a Ruby can be linked to, as a list of @{ Major; Dir }: each
+# folder named gccNN that has a marker and whose compiler runs and reports
+# major version NN. A folder with no marker is one still being built, and is
+# passed over without comment. A folder with a marker and no such compiler is
+# damaged, and linking a Ruby to it would leave that Ruby with no compiler.
+function Get-Toolchains {
+    $found = @()
+    if (-not (Test-Path $Root)) { return $found }
+    foreach ($entry in Get-ChildItem $Root -Directory) {
+        if ($entry.Name -notmatch '^gcc(\d+)$') { continue }
+        $major = [int]$Matches[1]
+        if (-not (Read-Marker $entry.FullName)) { continue }
+        $reported = Get-GccVersion $entry.FullName
+        if (-not $reported.StartsWith("$major.")) {
+            $said = if ($reported) { "reports gcc $reported" } else { 'has no gcc that runs' }
+            Write-Warning ("$($entry.FullName) $said, so no Ruby is linked to it. " +
+                           "Delete the folder and rerun to build it again.")
+            $script:failed = $true
+            continue
+        }
+        $found += @{ Major = $major; Dir = $entry.FullName }
+    }
+    return $found
+}
+
+# What a Ruby says about its own build, as @{ Arch; Major }: its platform and
+# the gcc major version that compiled it. $null when the Ruby does not answer.
+# Major is $null when the compiler message names no gcc version.
+function Get-RubyBuild {
+    param([string]$RubyDir)
+
+    $ruby = Join-Path $RubyDir 'bin\ruby.exe'
+    $code = 'c = RbConfig::CONFIG; print c[%q(arch)], %q( ), c[%q(CC_VERSION_MESSAGE)].to_s[/\) (\d+)\./, 1]'
+    # --disable-gems makes this start in a fraction of the time, and means
+    # rbconfig has to be asked for: it is RubyGems that normally loads it.
+    $out = "$(& $ruby --disable-gems -rrbconfig -e $code 2>$null)".Trim()
+    if ($LASTEXITCODE -ne 0 -or $out -notmatch '^(\S+)(?: (\d+))?$') { return $null }
+    $major = if ($Matches[2]) { [int]$Matches[2] } else { $null }
+    return @{ Arch = $Matches[1]; Major = $major }
+}
+
+function Test-ReparsePoint {
+    param($Item)
+    return [bool]($Item.Attributes -band [IO.FileAttributes]::ReparsePoint)
+}
+
+function Test-Admin {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    return (New-Object Security.Principal.WindowsPrincipal $identity).IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+# Whether this process can see the toolchain through a Ruby's link. A link
+# with the right target is not enough: see WHO MADE THE LINK MATTERS above.
+function Test-LinkWorks {
+    param([string]$Link)
+    return (Test-Path (Join-Path $Link 'usr\bin\msys-2.0.dll')) -and
+           (Test-Path (Join-Path $Link 'ucrt64\bin\gcc.exe'))
+}
+
+# Whether an SSH session will be able to follow a link. A session that is not
+# elevated can follow every link, so it cannot find this out by looking
+# through one. The link's owner says it: a junction made with administrator
+# rights is owned by the Administrators group, and one made without is owned
+# by the user. Measured on sophon: the first kind is followed over SSH and the
+# second is not.
+function Test-LinkMadeByAdmin {
+    param([string]$Link)
+
+    # .NET, not Get-Acl, for the reason given at the top of this script. The
+    # call is spelled differently in Windows PowerShell and in pwsh 7. Either
+    # reads the junction's own owner, not the owner of what it points at.
+    $info = New-Object IO.DirectoryInfo $Link
+    $section = [Security.AccessControl.AccessControlSections]::Owner
+    $acl = if ('System.IO.FileSystemAclExtensions' -as [type]) {
+        [IO.FileSystemAclExtensions]::GetAccessControl($info, $section)
+    } else {
+        $info.GetAccessControl($section)
+    }
+    $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    return $owner -eq 'S-1-5-32-544' -or $owner -eq 'S-1-5-18'
+}
+
+# Run one .NET file operation and say whether it worked. An exception from a
+# .NET call ends only its own statement. Without this the script would carry
+# on as if the directory had been moved or the link deleted, and could then
+# look through the link that was already there and report a new one.
+function Invoke-FileStep {
+    param([string]$What, [scriptblock]$Step)
+
+    try {
+        & $Step
+        return $true
+    } catch {
+        $problem = $_.Exception
+        if ($problem.InnerException) { $problem = $problem.InnerException }
+        Write-Warning "$What failed: $($problem.Message)"
+        $script:failed = $true
+        return $false
+    }
+}
+
+# Whether the path is a link to exactly this toolchain.
+function Test-LinkTarget {
+    param([string]$Link, [string]$Dir)
+
+    $item = Get-Item $Link -Force -ErrorAction SilentlyContinue
+    return [bool]($item -and (Test-ReparsePoint $item) -and (@($item.Target)[0] -eq $Dir))
+}
+
+# Delete a Ruby's own MSYS2 once its link is known to work.
+function Remove-Aside {
+    param([string]$Aside)
+
+    if (-not (Test-Path $Aside)) { return }
+    cmd /c rd /s /q "$Aside"
+    if (Test-Path $Aside) {
+        Write-Warning "Could not remove $Aside. Nothing uses it now; delete it by hand."
+    }
+}
+
+function Link-Ruby {
+    param($RubyDir, $Toolchains)
+
+    $name = Split-Path $RubyDir -Leaf
+    if (-not (Test-Path (Join-Path $RubyDir 'bin\ridk.cmd'))) {
+        Write-Host "ruby $name is not a RubyInstaller build; skipped"
+        return
+    }
+
+    $build = Get-RubyBuild $RubyDir
+    if (-not $build) {
+        Write-Warning "ruby $name did not say how it was built; not linked."
+        $script:failed = $true
+        return
+    }
+    # The toolchains hold UCRT64 packages and nothing else. A Ruby for another
+    # platform (x64-mingw32 up to Ruby 3.0, which wants MINGW64 packages) would
+    # find no compiler in one, so it keeps whatever MSYS2 it has.
+    if ($build.Arch -ne $rubyArch) {
+        Write-Host "ruby $name is an $($build.Arch) build and the toolchains are for $rubyArch; left alone"
+        return
+    }
+    $built = $build.Major
+    if (-not $built) {
+        Write-Warning "ruby $name did not say which gcc built it; not linked."
+        $script:failed = $true
+        return
+    }
+
+    $link = Join-Path $RubyDir 'msys64'
+    # Where a Ruby's own MSYS2 waits while its link is made and tested.
+    $aside = Join-Path $RubyDir 'msys64.replaced'
+    $item = Get-Item $link -Force -ErrorAction SilentlyContinue
+    if (-not $item -and (Test-Path $aside)) {
+        # A run was stopped between moving the Ruby's own MSYS2 aside and
+        # linking. Put it back and start from the beginning.
+        if (-not (Invoke-FileStep "ruby ${name}: moving $aside back to $link" {
+                    [IO.Directory]::Move($aside, $link) })) { return }
+        $item = Get-Item $link -Force
+    }
+    $hasOwn = $item -and -not (Test-ReparsePoint $item)
+    # Where the link here pointed before this run deleted it, so that it can
+    # be made again if its replacement does not work.
+    $oldTarget = $null
+
+    # The toolchain with the same gcc major, or failing that the nearest one,
+    # the newer of two equally near. A near match still builds most gems, and
+    # a Ruby with no compiler builds none. That argument holds only for a Ruby
+    # with no MSYS2 of its own: one that has its own keeps it.
+    $choice = $Toolchains |
+        Sort-Object @{ Expression = { [math]::Abs($_.Major - $built) } },
+                    @{ Expression = { $_.Major }; Descending = $true } |
+        Select-Object -First 1
+    if ($choice.Major -ne $built) {
+        $missing = "ruby $name was built with gcc $built and there is no gcc$built toolchain. "
+        $howTo = "To add one, see 'Add or move a gcc toolchain' in the README."
+        if ($hasOwn) {
+            Write-Warning ($missing + "It keeps its own MSYS2 from ridk. " + $howTo)
+            return
+        }
+        Write-Warning ($missing + "Using gcc$($choice.Major). " + $howTo)
+    }
+
+    if ($item -and -not $hasOwn) {
+        if (@($item.Target)[0] -eq $choice.Dir) {
+            $good = (Test-LinkWorks $link) -and (Test-LinkMadeByAdmin $link)
+            if ($good) {
+                Remove-Aside $aside
+                Write-Host "ruby $name -> gcc$($choice.Major) (built with gcc $built)"
+                return
+            }
+            if (-not (Test-Admin) -and (Test-LinkWorks $link)) {
+                # Making it again from here would make the same kind of link.
+                Write-Host "ruby $name -> gcc$($choice.Major) (built with gcc $built), but not over SSH"
+                $script:linkedWithoutAdmin = $true
+                return
+            }
+            Write-Host "ruby $name has a link that does not work everywhere; making it again"
+        }
+        # Deletes the junction, never what it points at. Remove-Item is not
+        # used: in Windows PowerShell 5.1 it can follow a junction and delete
+        # the target's contents.
+        # Reached with a link to another toolchain, or to this one and not
+        # working. Without administrator rights the link made in its place
+        # would not work over SSH. If the one here does, replacing it would
+        # take the compiler away from SSH sessions, the same loss as replacing
+        # a Ruby's own MSYS2 below.
+        if (-not (Test-Admin) -and (Test-LinkWorks $link) -and (Test-LinkMadeByAdmin $link)) {
+            Write-Warning ("ruby $name is linked to $(@($item.Target)[0]) and belongs with gcc$($choice.Major). " +
+                           "Moving a link that works over SSH needs administrator rights, so it was left alone. " +
+                           "Run this from an elevated terminal or over SSH: " +
+                           "& `"`$HOME\.local\bin\ruby-toolchains.ps1`" -LinkOnly")
+            if (-not $LinkOnly) { $script:failed = $true }
+            return
+        }
+        $oldTarget = @($item.Target)[0]
+        if (-not (Invoke-FileStep "ruby ${name}: deleting the old link at $link" {
+                    [IO.Directory]::Delete($link, $false) })) { return }
+    } elseif ($hasOwn) {
+        # A real directory: the MSYS2 that `ridk install` put inside this
+        # Ruby. RubyInstaller looks here first, so the Ruby cannot be linked
+        # while it exists. Say what it held that the shared toolchain lacks,
+        # because that is the only thing replacing it can lose.
+        #
+        # Not without administrator rights. The link made here would work in
+        # this session and not over SSH, where the Ruby's own MSYS2 does work,
+        # so replacing it would take the compiler away from SSH sessions.
+        if (-not (Test-Admin)) {
+            Write-Warning ("ruby $name has its own MSYS2 from ridk. Replacing it with a link that also works " +
+                           "over SSH needs administrator rights, so it was left alone. Run this from an " +
+                           "elevated terminal or over SSH: & `"`$HOME\.local\bin\ruby-toolchains.ps1`" -LinkOnly")
+            # As with a link made without those rights: an apply has not
+            # finished, and the hook must not fail an install over it.
+            if (-not $LinkOnly) { $script:failed = $true }
+            return
+        }
+        $pacman = Join-Path $link 'usr\bin\pacman.exe'
+        if (Test-Path $pacman) {
+            $had = @(& $pacman -Qqe 2>$null)
+            $has = @(& (Join-Path $choice.Dir 'usr\bin\pacman.exe') -Qq 2>$null)
+            $lost = @($had | Where-Object { $has -notcontains $_ })
+            if ($lost) {
+                Write-Warning ("ruby $name's own MSYS2 had packages the gcc$($choice.Major) toolchain lacks: " +
+                               ($lost -join ', ') + '. Add any that are needed to [rubyToolchains.packages].')
+            }
+        }
+        # Moved aside, not deleted: it is the only compiler this Ruby has
+        # until the link has been made and looked through.
+        Write-Host "ruby $name has its own MSYS2 from ridk; replacing it with a link"
+        if (-not (Invoke-FileStep ("ruby ${name}: moving $link to $aside (a program in it may be running; " +
+                                   "close it and rerun)") {
+                    [IO.Directory]::Move($link, $aside) })) { return }
+    }
+
+    New-Item -ItemType Junction -Path $link -Target $choice.Dir -ErrorAction SilentlyContinue | Out-Null
+    # The target is checked as well as the view through the link: if something
+    # was left at this path, looking through it proves nothing about the new link.
+    if (-not ((Test-LinkTarget $link $choice.Dir) -and (Test-LinkWorks $link))) {
+        Write-Warning "ruby ${name}: could not see the gcc$($choice.Major) toolchain through a link at $link. Not linked."
+        $script:failed = $true
+        $made = Get-Item $link -Force -ErrorAction SilentlyContinue
+        if ($made -and (Test-ReparsePoint $made)) {
+            if (-not (Invoke-FileStep "ruby ${name}: deleting the link at $link" {
+                        [IO.Directory]::Delete($link, $false) })) { return }
+        }
+        if ((Test-Path $aside) -and -not (Get-Item $link -Force -ErrorAction SilentlyContinue)) {
+            if (Invoke-FileStep "ruby ${name}: moving its own MSYS2 back from $aside" {
+                    [IO.Directory]::Move($aside, $link) }) {
+                Write-Host "ruby $name has its own MSYS2 back"
+            }
+        }
+        # The link that was here may have been the Ruby's only compiler. A
+        # link to the wrong toolchain is better than none.
+        if ($oldTarget -and -not (Get-Item $link -Force -ErrorAction SilentlyContinue)) {
+            New-Item -ItemType Junction -Path $link -Target $oldTarget -ErrorAction SilentlyContinue | Out-Null
+            if (Test-LinkTarget $link $oldTarget) {
+                Write-Host "ruby $name has its link to $oldTarget back"
+            } else {
+                Write-Warning "ruby ${name}: its link to $oldTarget could not be made again. It has no msys64 now."
+            }
+        }
+        return
+    }
+    # A link made without administrator rights does not work over SSH, and
+    # until one does the Ruby's own MSYS2 is not spare.
+    if (Test-LinkMadeByAdmin $link) { Remove-Aside $aside }
+    if (-not (Test-Admin)) { $script:linkedWithoutAdmin = $true }
+    Write-Host "ruby $name -> gcc$($choice.Major) (built with gcc $built), linked"
+}
+
+# ---------------------------------------------------------------------------
+
+if (-not $LinkOnly) {
+    foreach ($pin in $pins.gcc.PSObject.Properties) {
+        try {
+            Install-Toolchain $pin.Name $pin.Value
+        } catch {
+            Write-Warning "gcc$($pin.Name) toolchain: $($_.Exception.Message)"
+            $failed = $true
+        }
+    }
+}
+
+if (-not $NoLink) {
+    $toolchains = @(Get-Toolchains)
+    if (-not $toolchains) {
+        # Normal on a rebuild: script 04's `mise install` fires the hook
+        # before script 06 has built anything. Script 06 links afterwards.
+        Write-Host "No toolchains in $Root yet; no Ruby linked."
+    } elseif (-not (Test-Path $RubyRoot)) {
+        Write-Host "No Rubies in $RubyRoot; nothing to link."
+    } else {
+        # mise keeps junctions named 3, 3.4, latest and so on beside the real
+        # installs. Each Ruby is linked once, through its real directory.
+        $rubies = Get-ChildItem $RubyRoot -Directory |
+                  Where-Object { -not (Test-ReparsePoint $_) -and
+                                 (Test-Path (Join-Path $_.FullName 'bin\ruby.exe')) }
+        foreach ($ruby in $rubies) {
+            Link-Ruby $ruby.FullName $toolchains
+        }
+    }
+}
+
+if ($linkedWithoutAdmin) {
+    Write-Warning ("Some links were made without administrator rights. They work here, but an SSH session " +
+                   "cannot follow them and falls back to C:\msys64 or to no compiler. Run this once from an " +
+                   "elevated terminal or over SSH to make them again: " +
+                   "& `"`$HOME\.local\bin\ruby-toolchains.ps1`" -LinkOnly")
+    # A full run is an apply, and an apply that leaves SSH without a compiler
+    # has not finished. -LinkOnly is the hook, which runs in whatever terminal
+    # `mise install` was typed in and must not fail an install over this.
+    if (-not $LinkOnly) { $failed = $true }
+}
+
+if ($failed) { exit 1 }

@@ -142,11 +142,137 @@ chezmoi cd; git commit -am "ruby 4.0.6 -> 4.0.7"; git push
 `mise use -g` rewrites `config.toml`, so that file must go back to the repo — it
 is the declaration a rebuild replays.
 
-Changing `config.toml` re-triggers script 06 as well as script 04. For a **Ruby**
-bump that is the point — the new install has no compiler until it runs — but it
-means the apply that installs Ruby 4.0.7 also spends several minutes and about a
-gigabyte fetching the toolchain again. See
-[Ruby native extensions](#ruby-native-extensions--the-toolchain-lives-inside-the-ruby).
+A **Ruby** bump needs no toolchain work. mise's postinstall hook links the new
+Ruby to the shared toolchain for its gcc version as soon as it is installed, and
+nothing is downloaded unless the new Ruby was built with a gcc major that has no
+toolchain yet. The hook warns when that happens; see
+[Add or move a gcc toolchain](#add-or-move-a-gcc-toolchain) and
+[Ruby native extensions](#ruby-native-extensions--shared-toolchains-one-per-gcc-version).
+
+#### Install a Ruby for one test run
+
+```powershell
+mise install ruby@3.2
+```
+
+No `-g` and no `mise use`, so no default changes and `config.toml` is untouched.
+The same hook links it, and its last lines say which toolchain it got:
+
+```text
+ruby 3.2.11 -> gcc15 (built with gcc 15), linked
+```
+
+If the hook did not run, a Ruby predates it, or the install was done from a
+terminal that is not elevated and the Ruby will be used over SSH (see
+[who makes the junction matters](#ruby-native-extensions--shared-toolchains-one-per-gcc-version)),
+run the worker by hand. It is safe to rerun and works over SSH:
+
+```powershell
+& "$HOME\.local\bin\ruby-toolchains.ps1" -LinkOnly
+```
+
+Three things to know before installing one:
+
+- **Do not run `ridk install` in it.** That puts a whole MSYS2 inside the
+  Ruby, which RubyInstaller then uses in place of the shared toolchain, and
+  which the next elevated run replaces with the link anyway.
+- **A Ruby built with a gcc major that has no toolchain is linked to the
+  nearest one.** The hook's output says so, with a warning. To give it a
+  matching one, see [Add or move a gcc toolchain](#add-or-move-a-gcc-toolchain).
+- **Ruby 3.0 and older are not linked.** They are `x64-mingw32` builds and the
+  toolchains hold UCRT64 packages, so the hook reports them as left alone and
+  they have no compiler from this repo.
+
+#### Add or move a gcc toolchain
+
+The pins are in `.chezmoidata.toml` under `[rubyToolchains.gcc]`. Each
+toolchain is a date and the gcc version that date implies:
+
+```toml
+[rubyToolchains.gcc.15]
+    date = "2026-04-29"
+    version = "15.2.0"
+```
+
+The toolchain gets every UCRT64 package at the newest version MSYS2 had
+published by that day. Add a block when a Ruby is linked with the warning
+"there is no gccNN toolchain". To choose the date, list when MSYS2 published
+each gcc, and take a day on which the major you want was the newest:
+
+```powershell
+(Invoke-WebRequest https://repo.msys2.org/mingw/ucrt64/).Content -split "`n" |
+    Select-String 'ucrt-x86_64-gcc-\d[^"]*zst<' |
+    ForEach-Object { $_.Line -replace '<[^>]+>', '' }
+```
+
+The last day before the next major appeared is the usual choice: it has that
+major's final build and the libraries of the same period. Check the same
+listing for anything else that changed just before the day you pick. The
+gcc 16 date stops one day short of OpenSSL 4 for that reason.
+
+Then `chezmoi apply`. Script 06 builds the toolchain, about 1 GB and a few
+minutes, and relinks any Ruby that was making do with a neighbour. If the
+compiler in the result is not the `version` you wrote, the build fails and
+says so.
+
+To try a date before committing to it, build it somewhere else and leave the
+Rubies alone. The worker carries the pins it was rendered with, so apply only
+the worker, then run it by hand with another root:
+
+```powershell
+chezmoi apply ~/.local/bin/ruby-toolchains.ps1
+& "$HOME\.local\bin\ruby-toolchains.ps1" -Root "$HOME\tc-test" -NoLink
+```
+
+Delete `~\tc-test` afterwards.
+
+Adding to `packages` installs the addition in every toolchain on the next
+apply. Removing a package from the list does not uninstall it. To move a
+toolchain to another date, delete its folder under `~\.local\opt\msys2` and
+apply, which builds it again from nothing; the Rubies linked to it need no
+relinking, because the folder comes back at the same path.
+
+**The old files have to still exist.** MSYS2 keeps years of old package files
+on its server but promises nothing. `~\.local\opt\msys2\cache` keeps every
+package file a toolchain used and, per date, the list of files that set came to
+(`ucrt64\set-<date>-<id>.list`). Rebuilding a toolchain on this machine installs
+the dated packages from that list without asking the server, so it still works
+after MSYS2 deletes a file. It does still need the network for the MSYS-side
+build tools, which are not dated. A new machine has no cache and needs the
+server for everything. If a build there fails with a download error for an old
+file, move the date to one whose files are all still on the server.
+
+#### Build Ruby from source
+
+Use a toolchain's own shell, with `MSYSTEM` set so it starts in the UCRT64
+environment. Nothing from the Windows `PATH` reaches it:
+
+```powershell
+$env:MSYSTEM = 'UCRT64'
+& "$HOME\.local\opt\msys2\gcc16\usr\bin\bash.exe" -lc 'gcc --version'
+```
+
+The package list includes the libraries Ruby's own build looks for: OpenSSL,
+libyaml, libffi, zlib and gmp.
+
+Ruby's build also needs a Ruby that already works, its "baseruby". The
+toolchain's shell ignores the Windows `PATH`, so no installed Ruby is on it.
+Add one inside the shell, at the end of `PATH` so that the toolchain's own
+programs still come first:
+
+```powershell
+$env:MSYSTEM = 'UCRT64'
+& "$HOME\.local\opt\msys2\gcc16\usr\bin\bash.exe" -lc 'PATH=$PATH:$(cygpath -f - <<<$LOCALAPPDATA)/mise/installs/ruby/4.0.6/bin; ruby --version; gcc --version'
+```
+
+The command has no quotes in it on purpose. Windows PowerShell 5.1 and pwsh 7
+pass a double quote inside an argument to a program differently, so a quoted
+path would work in one and not the other. `cygpath -f - <<<` reads the path
+from its input, where bash does not split it at spaces, so a profile path
+with a space in it still works.
+
+Not yet done with one of these toolchains: the last source build on this
+machine used `C:\msys64`, before they existed.
 
 #### Add a new runtime
 
@@ -560,9 +686,19 @@ chezmoi init --apply jcouball/sophon-config
 Stop-Transcript
 ```
 
-Verify **outcomes, not exit codes**. A script returning zero has proved nothing:
+The transcript is not the whole log. Windows PowerShell does not record what
+chezmoi's scripts write to the console, so `bootstrap.log` holds the start and
+end times and only the last screenful of output. The full output exists only
+in the terminal window. **Before closing that window**, right-click its tab,
+choose Export Text, and save it as `$HOME\terminal.txt`. The November 2026 run
+closed the window first and lost everything before the last toolchain.
+
+Verify **outcomes, not exit codes**. A script returning zero has proved nothing.
+Run the checks in a new shell and in a transcript of their own, so their output
+is kept as the record of the run:
 
 ```powershell
+Start-Transcript -Path "$HOME\checks.log"
 mise ls --current          # 7 tools, none "(missing)"
 Test-Path 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC'
 $env:JAVA_HOME             # populated, in a NEW shell
@@ -572,10 +708,42 @@ cmd /c "cat --version"     # resolves - spawned Unix tools work outside Git Bash
 Get-Service sshd | Select-Object Status, StartType        # Running, Automatic (script 11)
 (Get-ItemProperty HKLM:\SOFTWARE\OpenSSH).DefaultShell    # ...\.local\opt\pwsh-7.6.7\pwsh.exe
 sshd -T | Select-String '^(passwordauthentication|authenticationmethods) '   # no; publickey
-chezmoi status             # empty
+chezmoi status | Out-Host  # empty
 ```
 
-Two of those deserve a word. Script 09 is a designed no-op on a clean VM — its
+Then the Ruby toolchains (script 06), in the same shell, so that they land in
+the same transcript:
+
+```powershell
+(Get-ChildItem "$HOME\.local\opt\msys2" -Directory).Name   # cache gcc14 gcc15 gcc16
+& "$HOME\.local\bin\ruby-toolchains.ps1" -LinkOnly          # one line, "ruby 4.0.6 -> gcc16 (built with gcc 16)", no warning
+ruby -e "require 'ruby_installer/runtime'; puts RubyInstaller::Runtime.msys2_installation.msys_path" | Out-Host   # ...\mise\installs\ruby\4.0.6\msys64
+gem install json --platform ruby --no-document --install-dir "$env:TEMP\gemcheck" | Out-Host   # "Building native extensions", "1 gem installed"
+Stop-Transcript
+```
+
+The `| Out-Host` on three of the checks is what puts their output in the
+transcript. Typed at the prompt in Windows PowerShell, a program started
+through a mise shim writes straight to the window and the transcript misses
+it; piped, its output passes through PowerShell and is recorded. Tested on the
+VM: `ruby -e "puts 1"` was missing from the log and the same command with
+`| Out-Host` was in it. As a backup, export this window's text as well, to
+`$HOME\checks.txt`.
+
+Copy the logs out of the VM before reverting it. The VM's firewall blocks SSH
+until its network is marked Private, so use PowerShell Direct. Run these on
+sophon, not in the VM, in an elevated terminal, and one line at a time: the
+second line asks for `certuser`'s password, and a line pasted after it is
+typed into that prompt.
+
+```powershell
+New-Item -ItemType Directory -Force "$HOME\cert" | Out-Null
+$s = New-PSSession -VMName sophon-cert -Credential certuser
+Copy-Item -FromSession $s -Path C:\Users\certuser\bootstrap.log, C:\Users\certuser\terminal.txt, C:\Users\certuser\checks.log, C:\Users\certuser\checks.txt -Destination "$HOME\cert\"
+Remove-PSSession $s
+```
+
+Two of the checks in the first list deserve a word. Script 09 is a designed no-op on a clean VM — its
 check confirms nothing crept in, not that anything was deleted. Script 10's
 check is the interesting one here: it proves the Warp veto is **pre-seeded
 before Warp is ever installed**, which is the scenario the script exists for
@@ -669,7 +837,7 @@ this machine that isn't in the repo, the system has a hole in it.
 README.md                             this document (ignored, not deployed)
 .chezmoi.toml.tmpl                    PowerShell interpreter, -ExecutionPolicy Bypass
 .chezmoiignore                        keeps README and the manifest source-only
-.chezmoidata.toml                     sshd's pwsh version and checksum
+.chezmoidata.toml                     pins: sshd's pwsh, and the Ruby toolchains' dates
 .chezmoiexternal.toml.tmpl            sshd's pwsh, a pinned ZIP, one folder per version
 .gitattributes                        * text=auto eol=lf
 winget-packages.json                  33 packages; read by script 01, never deployed
@@ -678,9 +846,11 @@ sshd_config                           sshd's config; copied to C:\ProgramData\ss
 
 dot_config/powershell/profile.ps1     mise activation; the real profile
 dot_config/husky/init.sh              git hooks get mise on PATH
-dot_config/mise/config.toml           the seven pinned runtimes
+dot_config/mise/config.toml           the seven pinned runtimes, and the hook that links a new Ruby
 AppData/Roaming/topgrade.toml         update policy - NOT dot_config, see below
 dot_local/bin/sshd-pwsh-drift.ps1.tmpl   weekly, from topgrade: warn when sshd's pwsh lags
+dot_local/bin/ruby-toolchains.ps1.tmpl   build the MSYS2 toolchains, link each Ruby to one
+dot_local/bin/ruby-toolchains-packages.sh   its helper: install MSYS2 packages as of a date
 
 .chezmoiscripts/
   run_onchange_01_winget_install.ps1.tmpl          winget import
@@ -689,7 +859,7 @@ dot_local/bin/sshd-pwsh-drift.ps1.tmpl   weekly, from topgrade: warn when sshd's
   run_once_03_build_tools.ps1                      VS Build Tools C++ workload
   run_onchange_after_04_mise_install.ps1.tmpl      materialise the runtimes
   run_once_after_05_terminal_default_profile.ps1   point Terminal at pwsh 7
-  run_onchange_after_06_ruby_devkit.ps1.tmpl       MSYS2 toolchain for native gems
+  run_onchange_after_06_ruby_toolchains.ps1.tmpl   MSYS2 toolchains for native gems
   run_once_after_07_mise_shims_path.ps1            shims on user PATH, for cmd.exe
   run_once_after_08_git_unix_tools_path.ps1        Git's usr\bin on user PATH, for spawned Unix tools
   run_once_after_09_remove_stale_mise_version_pins.ps1   delete persisted MISE_*_VERSION env vars
@@ -1010,36 +1180,164 @@ Script 03 exists for that, and needs `--force` because a plain `winget install`
 against an already-installed package answers "no available upgrade" and skips
 the override entirely.
 
-### Ruby native extensions — the toolchain lives inside the Ruby
+### Ruby native extensions — shared toolchains, one per gcc version
 
 mise installs Ruby from RubyInstaller2, but the bare build, with no compiler. The
 symptom is a `bundle install` where *every* native gem fails identically —
 `The compiler failed to generate an executable file` — which reads like a broken
-Ruby rather than a missing toolchain. `ridk install 1 3` fixes it; script 06 runs
-that.
+Ruby rather than a missing toolchain. The compiler comes from MSYS2.
 
-The part worth recording is **where it installs**, because the obvious assumption
-is wrong and it is wrong quietly. It is not `C:\msys64`, and it is not shared.
-RubyInstaller's installer component hardcodes its root:
+`~\.local\bin\ruby-toolchains.ps1` builds one MSYS2 per gcc major version in
+`~\.local\opt\msys2` (`gcc14`, `gcc15`, `gcc16`, about 1 GB each) and puts a junction named
+`msys64` inside each mise Ruby, pointing at the one for the gcc that built that
+Ruby. The pins are in `.chezmoidata.toml`. Script 06 runs it on an apply, and a
+postinstall hook in mise's config runs it, linking only, after every
+`mise install`.
 
-```ruby
-run_verbose(downloaded_path, "install", "--root",
-            File.join(RbConfig::TOPDIR, "msys64"), ...)
-  # site_ruby/<ver>/ruby_installer/runtime/components/01_msys2.rb
+**Why one per gcc version.** RubyInstaller builds each Ruby with whatever gcc
+MSYS2 shipped that week, and MSYS2 serves only its newest gcc by default. The
+Rubies on this machine in November 2026 were built with three:
+
+| Ruby | Built with |
+| --- | --- |
+| 3.1.7, 3.4.2 | gcc 14.2 |
+| 3.2.11 | gcc 15.2 |
+| 3.4.10, 4.0.6 | gcc 16.1 |
+
+A Ruby's headers were tested with the gcc that built it. A later major changes
+defaults underneath them — gcc 15 made C23 the default language — and an old
+Ruby that is out of maintenance never gets the header fix. Matching the major
+takes the compiler out of the list of things that differ between this machine
+and the one that built the Ruby. The Ruby reports its own:
+`RbConfig::CONFIG['CC_VERSION_MESSAGE']`.
+
+**Why a junction inside the Ruby.** RubyInstaller looks for MSYS2 in a fixed
+order: `$env:MSYS2_PATH`, `<ruby>\msys64`, `msys64` beside the Ruby, `C:\msys64`,
+then the registry (`iterate_msys_paths` in
+`ruby_installer/runtime/msys2_installation.rb`). `<ruby>\msys64` is the only
+entry that can differ per Ruby without an environment variable somebody has to
+remember. A junction needs no elevation.
+
+**Who makes the junction matters.** A junction made from an ordinary, unelevated
+session cannot be followed from an SSH session. Over SSH the path through it
+does not exist, RubyInstaller moves on down its list, and the Ruby builds with
+`C:\msys64` if there is one, without saying so. The same junction made over SSH
+or from an elevated terminal works everywhere. Windows' sshd does not follow
+junctions a non-administrator created; an elevated scheduled task follows them,
+so it is the SSH session and not elevation that decides. The first real apply
+found this: every link was right, every Ruby resolved to its toolchain in a
+normal terminal, and every one resolved to `C:\msys64` over SSH. The script
+therefore tests each link two ways: by looking through it, and by its owner,
+which is the Administrators group only when the link was made with
+administrator rights. A session that is not elevated can follow every link, so
+the owner is the only thing that tells it an SSH session cannot. With
+administrator rights the script makes again any link that fails either test.
+Without them it cannot, so it warns, and an apply fails at script 06 and stays
+pending until the links are right. The mise hook only warns. Most
+test runs on this machine happen over SSH, so apply toolchain changes from an
+elevated terminal, as the rebuild already does, or follow an unelevated apply
+with one run over SSH:
+
+```powershell
+ssh sophon '& "$HOME\.local\bin\ruby-toolchains.ps1" -LinkOnly'
 ```
 
-and `RbConfig::TOPDIR` for a mise-managed Ruby is the *versioned* install
-directory — `...\mise\installs\ruby\4.0.6`. So the toolchain lives inside the
-Ruby that mise owns, and a version bump leaves it behind. This is why script 06
-is `run_onchange` on `config.toml` and not `run_once`: `run_once` would fix this
-machine today and let the next Ruby bump silently break native gems again.
+**When a Ruby is not linked, and what happens to an MSYS2 it already has.** A
+Ruby that `ridk install` was run in has a real `msys64` directory, and
+RubyInstaller uses that before anything else, so linking the Ruby means
+replacing that directory. The script does so only when the replacement is
+known to be at least as good:
 
-Contrast with the Rust linker above, which is genuinely machine-level and
-therefore belongs to winget. A shared MSYS2 would work here too —
-`iterate_msys_paths` searches `C:/msys64` and the directory beside `TOPDIR` — but
-putting one there means either adding `MSYS2.MSYS2` to the manifest or
-reimplementing component 1's pinned download, and neither is worth displacing
-ridk's own supported path. The accepted cost is the re-download on a Ruby bump.
+- **Only `x64-mingw-ucrt` Rubies are linked.** The toolchains hold UCRT64
+  packages. Ruby 3.0 and older are `x64-mingw32` builds that want MINGW64
+  packages and would find no compiler in one. Such a Ruby is left as it is.
+- **A toolchain is offered only if its compiler runs** and reports the major
+  version in the folder's name. A `gccNN` folder that fails this is reported,
+  no Ruby is linked to it, and the run fails.
+- **A Ruby with its own MSYS2 keeps it unless a toolchain matches its gcc
+  major.** A Ruby with none is linked to the nearest toolchain, with a warning:
+  a near match builds most gems and no compiler builds none.
+- **The Ruby's own MSYS2 is moved to `msys64.replaced`, not deleted,** until
+  the link has been made and looked through. If the link does not work, the
+  directory is moved back. It is deleted once the link works. A run stopped in
+  between leaves `msys64.replaced`, and the next run puts it back and starts
+  again.
+- **A Ruby's own MSYS2 is replaced only with administrator rights.** A link
+  made without them does not work over SSH, and the Ruby's own MSYS2 does, so
+  replacing it from an ordinary terminal would take the compiler away from SSH
+  sessions. Such a run leaves the Ruby alone and warns; an apply fails at
+  script 06 until it is run elevated or over SSH.
+- **A link that works over SSH is moved only with administrator rights**, for
+  the same reason. A Ruby linked to the nearest toolchain belongs with a
+  matching one once that is built. Run without those rights, the script leaves
+  the working link where it is and warns, and an apply fails the same way.
+- **A link that is being moved is put back if its replacement does not work.**
+  A link to the wrong toolchain still gives the Ruby a compiler, and no link
+  gives it none.
+- **A delete or move that fails stops that Ruby's linking** with a warning,
+  and the run fails. The new link is also checked by its target, not only by
+  looking through it, so a link left over from before cannot pass for it.
+
+**What this replaced, and why.** Script 06 used to run `ridk install 1 3`, which
+installs a whole MSYS2 inside the Ruby that `config.toml` pins. A shared
+installation was considered then and rejected as more moving parts than ridk's
+own path. Four things changed:
+
+- **The other Rubies had been using an unmanaged copy all along.** Rubies
+  installed for test runs (`mise install ruby@3.1`) got nothing from script 06.
+  They built gems anyway, with `C:\msys64`, which Ruby 3.4.2's `ridk install`
+  had created on 2026-08-27: that RubyInstaller release ran the MSYS2 installer
+  with its default location. Nothing recorded it, a rebuild would not have
+  reproduced it, and it held gcc 14 for Rubies built with 15 and 16.
+- **The pinned Ruby's own copy did not match it either.** 4.0.6 was built with
+  gcc 16.1 and its `ridk install` fetched 15.2.
+- **The toolchain is used to build Ruby itself**, to test patches to Ruby. A
+  compiler that lives inside one installed Ruby, and goes when that Ruby is
+  uninstalled, is the wrong home for that.
+- **A Ruby bump re-downloaded a gigabyte**, which the old design accepted as its
+  cost. A shared toolchain is downloaded once.
+
+The cost that came with the change is the one the old decision avoided: this
+repo now carries its own pinned download of the MSYS2 base archive and its own
+package list, where ridk's supported path used to carry both.
+
+**Why each toolchain is a dated set.** The obvious build, today's MSYS2 with an
+older gcc installed over it, does not work. In September 2026 MSYS2 split
+`gcc-libs` into `libgcc`, `libstdc++` and others; every library built since
+depends on the new names, and they conflict with any older `gcc-libs`. pacman
+refuses the combination. An older gcc needs the libraries of its own period, so
+each toolchain is defined by a date: every UCRT64 package at the newest version
+MSYS2 had published by that day. MSYS2 offers no dated snapshots, but its server
+keeps old package files with their dates, and `ruby-toolchains-packages.sh`
+assembles the set from the listing, follows the dependencies recorded inside
+each file, and gives the whole set to pacman as one transaction.
+
+**What is pinned and what is not.** The base archive is pinned by version and
+checksum. The UCRT64 packages — the compiler, the C runtime, and every library
+a gem links against — are pinned by the date, and pacman checks each file
+against MSYS2's signing key. A rolling install would have given a toolchain
+built this week OpenSSL 4, published the day before this was written. The
+MSYS-side build tools (autoconf, make, sed) are not dated: they are the current
+ones on the day a toolchain is built. Nothing upgrades a toolchain afterwards.
+topgrade has no MSYS2 step in its `only` list, nothing here runs `pacman -Syu`,
+and gcc is in `IgnorePkg` in case somebody does.
+
+**Gems can still ask for packages.** A gem that declares
+`msys2_mingw_dependencies` makes RubyInstaller run `pacman -S` in the linked
+toolchain when the gem is installed. That is how both of the old copies came to
+hold OpenSSL, libyaml and libffi. Those are in the package list now, so the
+request finds them installed and does nothing. A gem that asks for one that is
+not in the list gets today's version of it, which in the gcc 14 and 15
+toolchains pacman refuses, for the reason above. Add the package to
+`[rubyToolchains.packages]` instead, where it is dated like the rest.
+
+**`C:\msys64` is not removed.** Once every Ruby is linked, nothing this repo
+manages resolves to it, but the script does not delete a directory it did not
+create. It stays the fallback RubyInstaller would find for a Ruby with no link.
+Delete it by hand when nothing else needs it; a rebuilt machine never has one.
+
+**`mise uninstall` and the junction.** Removing a Ruby removes the junction and
+leaves the toolchain it pointed at.
 
 ### Git hooks — husky's `init.sh`
 
@@ -1144,6 +1442,29 @@ Two traps: connect with `vmconnect` **before** starting the VM, or the
 "No operating system was loaded". And every Hyper-V cmdlet needs elevation —
 unelevated they return *empty lists* rather than access-denied, so a checkpoint
 can appear not to exist when it does.
+
+### The second certification: shared Ruby toolchains (November 2026)
+
+Replacing script 06 with the shared toolchains changed what a rebuild does, so
+the rebuild was run again on the VM, from the branch that made the change. It
+took 51 minutes. All three toolchains were built from nothing, which is the
+only test there is that MSYS2's server still holds every dated package file;
+the pinned Ruby was linked to gcc16; and a native gem compiled with it. The
+mise hook ran during script 04, before any toolchain existed, and said so
+without failing: "No toolchains in ... yet; no Ruby linked."
+
+It took two runs, and the first found three defects. None was in the
+toolchains.
+
+| Defect | Why sophon masked it |
+| --- | --- |
+| **Script 12 stopped the apply with nothing on screen.** `winget pin list` asked whether to accept the msstore source's agreements, and the script captures that command's output, so the question was never shown. The rebuild sat after script 11 until someone typed Y. | sophon accepted the agreements long ago |
+| The transcript the playbook asked for held only the last screenful of the apply | nobody had needed the log |
+| The playbook did not say that the logs are copied out from the host, or that a line pasted after the password prompt is typed into it | never written down |
+
+The second run, with script 12 fixed, went from start to finish without
+input. This is the first defect's lesson again: the failure that reports
+nothing is the one a clean machine is needed for.
 
 ### Running it again
 

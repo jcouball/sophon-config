@@ -7,3 +7,11 @@ python = "3.14.6"
 go = "1.26.5"
 rust = "1.97.1"
 actionlint = "1.7.12"
+
+# After every `mise install`, link any Ruby that has no MSYS2 toolchain yet to
+# the shared one for its gcc version. Without this a Ruby installed outside a
+# `chezmoi apply` would have no compiler until the next one. -LinkOnly never
+# downloads anything. Windows PowerShell, not pwsh: the pwsh on PATH in an SSH
+# session is the MSIX alias, which a session may not be able to start.
+[hooks]
+postinstall = { run = 'powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%USERPROFILE%\.local\bin\ruby-toolchains.ps1" -LinkOnly', shell = "cmd /c" }
