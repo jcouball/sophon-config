@@ -8,3 +8,52 @@
 [sshdPwsh]
     version = "7.6.7"
     sha256 = "d2f952ebdbf24386cb8923553aa58e41a846db35a6155ea04c58142a4b16dbb7"
+
+# The MSYS2 toolchains that mise's Rubies build native gems with, one per gcc
+# major version. ~/.local/bin/ruby-toolchains.ps1 builds them in
+# ~/.local/opt/msys2 and links each Ruby to the one it was built with. See
+# "Ruby native extensions" and "Add or move a gcc toolchain" in the README.
+[rubyToolchains]
+    # The archive a new toolchain starts from, from
+    # github.com/msys2/msys2-installer/releases. Only a toolchain built after
+    # a change here uses the new one.
+    [rubyToolchains.msys2Base]
+        version = "20260927"
+        sha256 = "ad336cccfda47758b5e15cda993fbba421115cb0b126697daef1ee4dfe37209f"
+
+    # One toolchain per gcc major version. `date` is the day whose UCRT64
+    # packages the toolchain gets: each one at the newest version MSYS2 had
+    # published by then. `version` is the gcc that day implies; the script
+    # asks the compiler and fails if it disagrees, so a wrong date cannot
+    # produce a mislabelled toolchain.
+    #
+    # 14 and 15 are each the last day before MSYS2 moved to the next major.
+    # 16 is the day before MSYS2 moved to OpenSSL 4.
+    [rubyToolchains.gcc.14]
+        date = "2025-04-24"
+        version = "14.2.0"
+    [rubyToolchains.gcc.15]
+        date = "2026-04-29"
+        version = "15.2.0"
+    [rubyToolchains.gcc.16]
+        date = "2026-11-14"
+        version = "16.2.0"
+
+    [rubyToolchains.packages]
+        # UCRT64 packages, without the mingw-w64-ucrt-x86_64- prefix, taken
+        # as of each toolchain's date. gcc brings binutils, the C runtime and
+        # headers with it. The first line is the compiler side of what
+        # `ridk install 3` installs; the second is the libraries that building
+        # Ruby itself needs, which gems that wrap them use too.
+        ucrt64 = [
+            "gcc", "make", "pkgconf", "tools-git", "libmangle-git",
+            "openssl", "libyaml", "libffi", "zlib", "gmp",
+        ]
+        # MSYS-side build tools, the rest of `ridk install 3`'s list. These
+        # are not dated: they come from MSYS2's current packages on the day a
+        # toolchain is built.
+        msys = [
+            "autoconf", "autogen", "automake-wrapper", "diffutils", "file",
+            "gawk", "grep", "libtool", "m4", "make", "patch", "sed",
+            "texinfo", "texinfo-tex", "wget", "pkgconf",
+        ]
