@@ -2,6 +2,20 @@
 # Managed by chezmoi (jcouball/sophon-config). This is the real profile; the
 # files at $PROFILE are one-line stubs that source it. Edit here, not there.
 
+# A winget upgrade of mise can remove mise's directory from the user PATH.
+# Without it this profile used to skip activation and say nothing, and every
+# shim failed with "failed to execute mise". mise-path.ps1 puts the entry back
+# for later shells and returns where mise.exe is, which fixes this one. It
+# warns when it changes anything or cannot find mise.
+if (-not (Get-Command mise -ErrorAction SilentlyContinue)) {
+    $misePath = Join-Path $HOME '.local\bin\mise-path.ps1'
+    if (Test-Path $misePath) {
+        $miseExe = & $misePath -PassThru
+        if ($miseExe) { $env:Path += ';' + (Split-Path -Parent $miseExe) }
+    }
+    Remove-Variable misePath, miseExe -ErrorAction SilentlyContinue
+}
+
 if (Get-Command mise -ErrorAction SilentlyContinue) {
     # Activation exports JAVA_HOME, ANT_HOME, GOROOT, CARGO_HOME and RUSTUP_HOME
     # as well as PATH -- the JRuby build reads JAVA_HOME and ANT_HOME.
