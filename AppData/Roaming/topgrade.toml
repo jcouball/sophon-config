@@ -32,6 +32,9 @@ only = [
 #            sweeping them independently can break that pairing.
 
 # topgrade runs each command as `pwsh -c "<command>"` on Windows, so $HOME
-# expands. Last means after the chezmoi step, so a pin pulled this run counts.
+# expands. Last means after the chezmoi step, so a pin pulled this run counts,
+# and after the winget step, whose upgrade of mise can remove mise from the
+# user PATH. "mise on PATH" puts it back in the same run.
 [commands]
+"mise on PATH" = '& "$HOME\.local\bin\mise-path.ps1"'
 "sshd pwsh drift" = '& "$HOME\.local\bin\sshd-pwsh-drift.ps1"'

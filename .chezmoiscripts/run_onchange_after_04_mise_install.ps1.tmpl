@@ -14,23 +14,52 @@
 # NOTE: include resolves against the SOURCE directory, so this is the source
 # name (dot_config/...), not the target name (.config/...).
 # config.toml hash: {{ include "dot_config/mise/config.toml" | sha256sum }}
+#
+# The second hash re-runs this when the PATH repair below changes.
+# mise-path.ps1 hash: {{ include "dot_local/bin/mise-path.ps1" | sha256sum }}
+#
+# EVERY FAILURE HERE EXITS 1. chezmoi records a run_onchange script as done
+# when it exits 0, and does not run it again until a hash above changes. This
+# script used to warn and return when it could not find mise, so an apply that
+# installed nothing was recorded as done and a version bump was never installed.
 
-# Refresh PATH from the registry first. mise is installed by script 01 in this
-# same chezmoi run, and winget adds its directory to the *user* PATH -- but this
-# process inherited its environment before that happened, and Windows never
-# propagates PATH changes into a running process. Without this, a fresh machine
-# fails here: mise "not found", the script returns cleanly, and none of the
-# pinned runtimes ever install.
+# Put mise back on the user PATH if winget has dropped it. An upgrade of a
+# portable package can remove its PATH entry and not restore it; the helper's
+# header has the details. A separate process, so its `exit` ends the helper and
+# not this script. chezmoi wrote the helper before this ran, because of `after_`.
+$repair = Join-Path $HOME '.local\bin\mise-path.ps1'
+
+if (-not (Test-Path $repair)) {
+    Write-Warning "$repair is missing, so mise's PATH entry was not checked and nothing was installed. chezmoi should have written it before this script ran."
+    exit 1
+}
+
+& powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $repair
+
+if ($LASTEXITCODE -ne 0) {
+    Write-Warning 'mise could not be found (see above), so none of the pinned tools were installed. Rerun chezmoi apply once it is fixed.'
+    exit 1
+}
+
+# Refresh PATH from the registry. mise is installed by script 01 in this same
+# chezmoi run, or was put back on the PATH just above, and this process
+# inherited its environment before either happened. Windows never propagates
+# PATH changes into a running process.
 $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
             [Environment]::GetEnvironmentVariable('Path', 'User')
 
 if (-not (Get-Command mise -ErrorAction SilentlyContinue)) {
-    Write-Warning 'mise is not on PATH even after refreshing it - check that script 01 installed jdx.mise.'
-    return
+    Write-Warning 'mise-path.ps1 found mise, but it is still not on PATH after refreshing it. Nothing was installed.'
+    exit 1
 }
 
 Write-Host 'Installing pinned tools from ~/.config/mise/config.toml ...'
 mise install
+
+if ($LASTEXITCODE -ne 0) {
+    Write-Warning "mise install failed (exit $LASTEXITCODE). Rerun chezmoi apply once it is fixed."
+    exit 1
+}
 
 Write-Host ''
 mise ls --current

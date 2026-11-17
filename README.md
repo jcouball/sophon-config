@@ -861,6 +861,7 @@ dot_config/husky/init.sh              git hooks get mise on PATH
 dot_config/mise/config.toml           the seven pinned runtimes, and the hook that links a new Ruby
 AppData/Roaming/topgrade.toml         update policy - NOT dot_config, see below
 dot_local/bin/sshd-pwsh-drift.ps1.tmpl   weekly, from topgrade: warn when sshd's pwsh lags
+dot_local/bin/mise-path.ps1              put mise back on the user PATH after winget drops it
 dot_local/bin/ruby-toolchains.ps1.tmpl   build the MSYS2 toolchains, link each Ruby to one
 dot_local/bin/ruby-toolchains-packages.sh   its helper: install MSYS2 packages as of a date
 
@@ -960,6 +961,17 @@ so this is not optional and cannot be replaced by shims. PowerShell only.
 07. Real `.exe` files that re-dispatch through mise, so anything that reads
 `PATH` finds them — cmd.exe, a 5.1 window whose policy is locked down, a GUI app
 launched from Explorer. It resolves tools; it exports nothing.
+
+**Both need `mise.exe` itself on `PATH`.** The profile activates only if it
+finds `mise`, and a shim starts `mise` by name. winget puts it there, and an
+upgrade of mise can take it away again
+([winget-cli#6461](https://github.com/microsoft/winget-cli/issues/6461)): the
+package stays installed, its directory leaves the user `PATH`, and every managed
+tool fails in every shell with `mise-shim: failed to execute mise: program not
+found`. That happened on sophon on 2026-11-09. `~\.local\bin\mise-path.ps1`
+checks for it and puts the directory back. Script 04 runs it before
+`mise install`, topgrade runs it after its winget step, and the profile runs it
+when a new shell cannot find `mise`.
 
 Script 08 uses the same channel to append Git for Windows' `usr\bin`, so
 spawned Unix tools (`cat`, `false`, `sleep` — process_executer's spec suite
@@ -1141,7 +1153,7 @@ at the top.
 | When | Command | Why |
 | --- | --- | --- |
 | Immediately after editing any config by hand | `chezmoi re-add` | The single habit that makes this work. Skip it once and the repo starts lying to you. |
-| Weekly | `topgrade` | Sweeps winget, VS Code, gh extensions, Windows Update, and pulls the repo. |
+| Weekly | `topgrade` | Sweeps winget, VS Code, gh extensions, Windows Update, and pulls the repo. Then checks that mise is still on `PATH` and that sshd's pwsh is current. |
 | Weekly, before topgrade | `chezmoi status` | Catches files changed on disk that never made it back. |
 | When adding a tool | `winget install` then `winget export` | Install, then re-snapshot. Commit both together. |
 | Per project | `mise install` | Runtimes are project-scoped. Never on a schedule. |
@@ -1666,6 +1678,13 @@ unreachable objects, so the old commit may remain fetchable by SHA afterwards.
   presents as the wrong runtime version with nothing saying why; `mise ls
   <tool>` names the winning source. Script 09 deletes any it finds. Never
   `setx` one.
+- **`ruby`, `node` and the rest all fail with `mise-shim: failed to execute
+  mise`.** mise's directory has left the user `PATH`, most likely in a winget
+  upgrade of mise. Open a new PowerShell window: the profile puts it back and
+  says so. From cmd.exe, or to do it directly, run
+  `powershell -File "%USERPROFILE%\.local\bin\mise-path.ps1"`. Windows already
+  open keep the old `PATH`. See
+  [How the managed tools reach a shell](#how-the-managed-tools-reach-a-shell).
 - **`Restart-Service sshd` does not end open SSH sessions.** Each connection
   runs in its own `sshd.exe`, a child of the service that outlives it. A
   restart changes what new connections get; a session open across it keeps
