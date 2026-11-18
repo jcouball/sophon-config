@@ -77,6 +77,7 @@ Afterwards, by hand:
   and script 05 cannot set the default profile before that exists. The second
   apply does it; nothing else re-runs.
 - Warp if you want it, and Warp's own settings, which cannot be versioned.
+- Sign in to Telegram: scan its QR code from the phone app.
 - Mark the LAN Private, or the firewall blocks SSH. Script 11 warns when no
   network is. In an elevated terminal, with the LAN adapter's name (`Ethernet`
   on sophon):
@@ -844,7 +845,7 @@ README.md                             this document (ignored, not deployed)
 .chezmoidata.toml                     pins: sshd's pwsh, and the Ruby toolchains' dates
 .chezmoiexternal.toml.tmpl            sshd's pwsh, a pinned ZIP, one folder per version
 .gitattributes                        * text=auto eol=lf
-winget-packages.json                  33 packages; read by script 01, never deployed
+winget-packages.json                  36 packages; read by script 01, never deployed
 administrators_authorized_keys        public keys for SSH; read by script 11, never deployed
 sshd_config                           sshd's config; copied to C:\ProgramData\ssh by script 11
 

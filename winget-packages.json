@@ -105,6 +105,9 @@
           "PackageIdentifier": "Symless.Synergy"
         },
         {
+          "PackageIdentifier": "Telegram.TelegramDesktop"
+        },
+        {
           "PackageIdentifier": "topgrade-rs.topgrade"
         },
         {
