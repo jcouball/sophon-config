@@ -1,0 +1,305 @@
+# Make MesloLGS NF the font of every Windows Terminal profile.
+#
+# The zsh prompt on Neuromancer and rama is powerlevel10k in nerdfont-complete
+# mode. An ssh session from Terminal into either host draws that prompt with
+# Terminal's font, and a font without the Nerd Font glyphs shows its separators
+# and icons as boxes. Script 13 installs the font; this script selects it.
+#
+# The setting is profiles.defaults.font.face, which applies to every profile
+# that does not set a font of its own.
+#
+# settings.json is not managed as a file, for the reason script 05 gives:
+# Terminal rewrites it. This script patches the one value and leaves the rest
+# of the file alone.
+#
+# RUN_ONCHANGE keyed on a hash of settings.json, also as in script 05. On a
+# fresh machine the file does not exist until Terminal has been opened once,
+# and a run_once script that skipped then would never look again. The hash
+# makes chezmoi run this again on the first apply after the file changes. The
+# script is idempotent, so a re-run costs one line of output.
+#
+# Scripts 05 and 14 both edit the file, so after an apply in which either one
+# changed it, the next apply runs both once more. They find nothing to do.
+#
+# EXIT CODES. A missing settings.json exits 0: that is a fresh machine, and the
+# hash brings the script back. Every other way of not setting the font exits 1.
+# chezmoi records a run_onchange script that exits 0 as done, and would not
+# run it again until settings.json changed, so a quiet exit 0 would leave the
+# font unset with nothing to say so.
+{{ $settings := joinPath .chezmoi.homeDir "AppData/Local/Packages/Microsoft.WindowsTerminal_8wekyb3d8bbwe/LocalState/settings.json" -}}
+# settings.json hash: {{ if stat $settings }}{{ include $settings | sha256sum }}{{ else }}missing{{ end }}
+
+$ErrorActionPreference = 'Stop'
+
+$settings = Join-Path $env:LOCALAPPDATA `
+    'Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json'
+$face = 'MesloLGS NF'
+
+if (-not (Test-Path $settings)) {
+    Write-Host ('Windows Terminal settings not found - skipping. Open Terminal once, ' +
+                'then `chezmoi apply` sets the font.')
+    exit 0
+}
+
+# THIS SCRIPT NEEDS POWERSHELL 7, AND CHEZMOI STARTS IT WITH 5.1.
+# .chezmoi.toml.tmpl runs every script with Windows PowerShell 5.1, because
+# pwsh 7 does not exist when the first script runs. settings.json may carry
+# comments, and 5.1's ConvertFrom-Json rejects them. So under 5.1 this script
+# does nothing but start itself again under pwsh 7.
+#
+# The pwsh it uses is the ZIP build sshd runs, in ~/.local/opt. It is a chezmoi
+# external, so it is on disk before any after_ script, at a path that does not
+# depend on PATH. The MSIX pwsh is the fallback; PATH is refreshed first
+# because script 01 may have installed it earlier in this same apply. The
+# fallback works at the desktop only: an ssh session cannot start the MSIX
+# build ("Access is denied"), and the script then fails and says so.
+if ($PSVersionTable.PSVersion.Major -lt 7) {
+    $pwsh = Join-Path $HOME '.local\opt\pwsh-{{ .sshdPwsh.version }}\pwsh.exe'
+    if (-not (Test-Path $pwsh)) {
+        $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
+                    [Environment]::GetEnvironmentVariable('Path', 'User')
+        $found = Get-Command pwsh.exe -ErrorAction SilentlyContinue
+        $pwsh = if ($found) { $found.Source } else { $null }
+    }
+    if (-not $pwsh) {
+        Write-Warning ("PowerShell 7 not found, so Windows Terminal's font was not set. " +
+                       'Run `chezmoi apply` again once pwsh is installed.')
+        exit 1
+    }
+    & $pwsh -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $PSCommandPath
+    exit $LASTEXITCODE
+}
+
+function Stop-Unchanged([string]$why) {
+    Write-Warning ("$why - $settings was not changed. Set profiles.defaults.font.face " +
+                   "to `"$face`" in Terminal's settings by hand, or fix the file and " +
+                   'run `chezmoi apply` again.')
+    exit 1
+}
+
+# Read the bytes, not the text, so the file can be written back as it was
+# found: Terminal saves it with a UTF-8 byte order mark. The bytes are also
+# what the check before the write compares.
+try {
+    $bytes = [System.IO.File]::ReadAllBytes($settings)
+} catch {
+    Stop-Unchanged "Could not read settings.json ($($_.Exception.Message))"
+}
+$hasBom = $bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
+
+# Decode strictly. The default decoder turns a byte that is not valid UTF-8
+# into a replacement character without saying so, and writing the text back
+# would then change that byte for good. A file saved in another encoding is
+# left alone instead.
+$utf8 = [System.Text.UTF8Encoding]::new($false, $true)
+try {
+    $raw = if ($hasBom) { $utf8.GetString($bytes, 3, $bytes.Length - 3) } else { $utf8.GetString($bytes) }
+} catch {
+    Stop-Unchanged 'settings.json is not valid UTF-8'
+}
+
+# NAMES ARE MATCHED BY EXACT CASE, here and in the scanner below, because that
+# is how Terminal reads them: it ignores a "Font" member. PowerShell's usual
+# lookups ignore case, on an object from ConvertFrom-Json and in a hashtable
+# written as @{}, and would report a font set under "Font" as done. So the
+# file is parsed with -AsHashtable, whose tables keep case apart.
+try {
+    $json = $raw | ConvertFrom-Json -AsHashtable
+} catch {
+    Stop-Unchanged 'Could not parse settings.json'
+}
+
+# The value of profiles.defaults.font.face in parsed settings, or nothing when
+# any step of that path is missing or is not an object.
+function Get-Face($parsed) {
+    $node = $parsed
+    foreach ($name in 'profiles', 'defaults', 'font', 'face') {
+        if ($node -isnot [System.Collections.IDictionary] -or -not $node.Contains($name)) { return $null }
+        $node = $node[$name]
+    }
+    return $node
+}
+
+if ((Get-Face $json) -eq $face) {
+    Write-Host "Windows Terminal already uses $face."
+    exit 0
+}
+
+# THE EDIT IS MADE ON THE TEXT, NOT BY RE-SERIALISING. settings.json carries
+# comments and formatting that ConvertTo-Json would discard.
+#
+# The functions below walk the text as JSON with comments, so that a member is
+# found only where it really is one. A search for the text `"font"` would also
+# find it inside a comment, inside a string, or in a nested object, and edit
+# the wrong place.
+
+# The index of the first character at or after $i that is not whitespace or
+# part of a comment.
+function Skip-Trivia([string]$t, [int]$i) {
+    while ($i -lt $t.Length) {
+        if ([char]::IsWhiteSpace($t[$i])) {
+            $i++
+        } elseif ($t[$i] -eq '/' -and $i + 1 -lt $t.Length -and $t[$i + 1] -eq '/') {
+            while ($i -lt $t.Length -and $t[$i] -ne "`n") { $i++ }
+        } elseif ($t[$i] -eq '/' -and $i + 1 -lt $t.Length -and $t[$i + 1] -eq '*') {
+            $end = $t.IndexOf('*/', $i + 2)
+            if ($end -lt 0) { throw 'unterminated comment' }
+            $i = $end + 2
+        } else {
+            break
+        }
+    }
+    return $i
+}
+
+# $t[$i] is the opening quote of a string. The index just past its closing quote.
+function Skip-String([string]$t, [int]$i) {
+    $i++
+    while ($i -lt $t.Length -and $t[$i] -ne '"') {
+        if ($t[$i] -eq '\') { $i++ }
+        $i++
+    }
+    if ($i -ge $t.Length) { throw 'unterminated string' }
+    return $i + 1
+}
+
+# $t[$i] is the first character of a value. The index just past the value.
+function Skip-Value([string]$t, [int]$i) {
+    if ($t[$i] -eq '"') { return Skip-String $t $i }
+    if ($t[$i] -eq '{' -or $t[$i] -eq '[') {
+        $depth = 0
+        while ($i -lt $t.Length) {
+            $i = Skip-Trivia $t $i
+            if ($i -ge $t.Length) { break }
+            $c = $t[$i]
+            if ($c -eq '"') { $i = Skip-String $t $i; continue }
+            if ($c -eq '{' -or $c -eq '[') { $depth++ }
+            if ($c -eq '}' -or $c -eq ']') {
+                $depth--
+                if ($depth -eq 0) { return $i + 1 }
+            }
+            $i++
+        }
+        throw 'unterminated object or array'
+    }
+    # A number, true, false or null.
+    while ($i -lt $t.Length -and -not [char]::IsWhiteSpace($t[$i]) -and ',}]/'.IndexOf($t[$i]) -lt 0) { $i++ }
+    return $i
+}
+
+# $t[$open] is the brace that opens an object. Returns the object's direct
+# members, each with the start and end of its value, and where the object
+# closes. Members of nested objects are not included.
+function Read-Object([string]$t, [int]$open) {
+    if ($t[$open] -ne '{') { throw 'not an object' }
+    $members = [hashtable]::new([StringComparer]::Ordinal)
+    $i = Skip-Trivia $t ($open + 1)
+    while ($i -lt $t.Length -and $t[$i] -ne '}') {
+        if ($t[$i] -ne '"') { throw "unexpected character at $i" }
+        $keyEnd = Skip-String $t $i
+        # Decode the name as JSON does, so that a name written with an
+        # escape, such as "pro\u0066iles", is still the name it spells.
+        $name = ('{"name":' + $t.Substring($i, $keyEnd - $i) + '}' | ConvertFrom-Json).name
+        $i = Skip-Trivia $t $keyEnd
+        if ($t[$i] -ne ':') { throw "expected a colon at $i" }
+        $start = Skip-Trivia $t ($i + 1)
+        $end = Skip-Value $t $start
+        $members[$name] = @{ Start = $start; End = $end }
+        $i = Skip-Trivia $t $end
+        if ($i -lt $t.Length -and $t[$i] -eq ',') { $i = Skip-Trivia $t ($i + 1) }
+    }
+    if ($i -ge $t.Length) { throw 'unterminated object' }
+    return @{ Members = $members; Open = $open; Close = $i }
+}
+
+# Add $member as the first member of an object read by Read-Object.
+function Add-FirstMember([string]$t, $object, [string]$member) {
+    $body = $t.Substring($object.Open + 1, $object.Close - $object.Open - 1)
+    if (-not $body.Trim()) {
+        return $t.Substring(0, $object.Open) + "{ $member }" + $t.Substring($object.Close + 1)
+    }
+    # A body with no members here holds only a comment. Keep it.
+    $separator = if ($object.Members.Count) { ',' } else { '' }
+    return $t.Insert($object.Open + 1, " $member$separator")
+}
+
+$quotedFace = '"' + $face + '"'
+$updated = $null
+$problem = $null
+try {
+    $root = Read-Object $raw (Skip-Trivia $raw 0)
+    $profiles = $root.Members['profiles']
+    if (-not $profiles -or $raw[$profiles.Start] -ne '{') {
+        $problem = 'settings.json has no "profiles" object'
+    } else {
+        $defaults = (Read-Object $raw $profiles.Start).Members['defaults']
+        if (-not $defaults -or $raw[$defaults.Start] -ne '{') {
+            # Terminal writes "defaults": {} itself, so a file without one has
+            # been edited by hand. Say so instead of guessing where it goes.
+            $problem = 'settings.json has no "profiles.defaults" object'
+        } else {
+            $defaultsObject = Read-Object $raw $defaults.Start
+            $font = $defaultsObject.Members['font']
+            if (-not $font) {
+                # No font object: an empty defaults, or one with other settings.
+                $updated = Add-FirstMember $raw $defaultsObject ('"font": { "face": ' + $quotedFace + ' }')
+            } elseif ($raw[$font.Start] -ne '{') {
+                $problem = 'profiles.defaults.font is not an object'
+            } else {
+                $fontObject = Read-Object $raw $font.Start
+                $faceMember = $fontObject.Members['face']
+                if ($faceMember) {
+                    # A font object with another face: replace the value.
+                    $updated = $raw.Substring(0, $faceMember.Start) + $quotedFace + $raw.Substring($faceMember.End)
+                } else {
+                    # A font object with no face, such as one that sets only a size.
+                    $updated = Add-FirstMember $raw $fontObject ('"face": ' + $quotedFace)
+                }
+            }
+        }
+    }
+} catch {
+    $problem = "Could not find where the font goes in settings.json ($($_.Exception.Message))"
+}
+if ($problem) { Stop-Unchanged $problem }
+
+# Check the result before writing it: parse what the edit produced and confirm
+# it is still valid, has the font, and has lost nothing.
+$ok = $false
+try {
+    $check = $updated | ConvertFrom-Json -AsHashtable
+    $ok = (Get-Face $check) -eq $face -and
+          $check['defaultProfile'] -eq $json['defaultProfile'] -and
+          @($check['profiles']['list']).Count -eq @($json['profiles']['list']).Count
+} catch {
+    $ok = $false
+}
+if (-not $ok) { Stop-Unchanged 'The edit did not produce valid settings' }
+
+# Terminal may have saved settings.json since it was read above. Writing now
+# would replace what it saved with the older copy. So read the file again, and
+# if it has changed, write nothing: the next apply starts from the new file.
+$now = [System.IO.File]::ReadAllBytes($settings)
+if (-not [System.Linq.Enumerable]::SequenceEqual([byte[]]$now, [byte[]]$bytes)) {
+    Write-Warning ('Windows Terminal changed settings.json while this script was running, so the ' +
+                   'font was not set. Run `chezmoi apply` again.')
+    exit 1
+}
+
+# Write the new text to a file beside settings.json and swap the two, so that
+# settings.json is always either the old file or the new one. Writing over it
+# in place would empty it first, and a write that then failed would leave
+# Terminal with an empty or partial file. The swap also keeps the old file as
+# the backup.
+$out = if ($hasBom) { [byte[]](0xEF, 0xBB, 0xBF) + $utf8.GetBytes($updated) } else { $utf8.GetBytes($updated) }
+$tmp = "$settings.font.tmp"
+try {
+    [System.IO.File]::WriteAllBytes($tmp, [byte[]]$out)
+    [System.IO.File]::Replace($tmp, $settings, "$settings.font.bak")
+} catch {
+    $why = $_.Exception.Message
+    # Clearing up must not hide the reason for the failure.
+    try { Remove-Item -LiteralPath $tmp -Force } catch { }
+    Stop-Unchanged "Could not write settings.json ($why)"
+}
+Write-Host "Windows Terminal font set to $face (backup: $settings.font.bak)"
