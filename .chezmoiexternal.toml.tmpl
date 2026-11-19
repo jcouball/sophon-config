@@ -25,3 +25,29 @@
     url = "https://github.com/PowerShell/PowerShell/releases/download/v{{ .sshdPwsh.version }}/PowerShell-{{ .sshdPwsh.version }}-win-x64.zip"
     checksum.sha256 = "{{ .sshdPwsh.sha256 }}"
     exact = true
+
+# The two shared fonts, MesloLGS NF and Fira Code, downloaded into the folder
+# where Windows keeps fonts installed for one user. winget cannot install a
+# font on this machine. The pins live in .chezmoidata.toml.
+#
+# A file here is not a usable font until it is registered, which is script 13's
+# job. chezmoi downloads externals before it runs an after_ script, so the
+# script finds the files in place.
+#
+# One entry per file, and the folder is NOT `exact`: it also holds fonts this
+# repo does not manage, and chezmoi must leave them alone.
+{{ range .fonts.meslo.files -}}
+["AppData/Local/Microsoft/Windows/Fonts/{{ .file }}"]
+    type = "file"
+    url = "https://github.com/romkatv/powerlevel10k-media/raw/{{ $.fonts.meslo.commit }}/{{ .file | replace " " "%20" }}"
+    checksum.sha256 = "{{ .sha256 }}"
+{{ end -}}
+
+# Each Fira Code entry extracts one file from the same release archive.
+{{ range .fonts.firaCode.files -}}
+["AppData/Local/Microsoft/Windows/Fonts/{{ .file }}"]
+    type = "archive-file"
+    url = "https://github.com/tonsky/FiraCode/releases/download/{{ $.fonts.firaCode.version }}/Fira_Code_v{{ $.fonts.firaCode.version }}.zip"
+    checksum.sha256 = "{{ $.fonts.firaCode.sha256 }}"
+    path = "ttf/{{ .file }}"
+{{ end -}}

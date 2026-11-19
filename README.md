@@ -14,6 +14,7 @@ nothing here needs a conditional.
 | Host | sophon — Windows 11 Pro, build 26200 |
 | Shell | PowerShell 7 (`pwsh`) |
 | Terminal | Windows Terminal (managed) · Warp (by hand) |
+| Fonts | MesloLGS NF for terminals · Fira Code for the VS Code editor |
 | Package manager | winget 1.29 |
 | Runtimes | mise, 7 tools |
 | WSL | 2.5.10 (Ubuntu 24.04.3, deliberately bare) |
@@ -76,7 +77,13 @@ Afterwards, by hand:
   generates its pwsh profile the first time it opens after pwsh is installed,
   and script 05 cannot set the default profile before that exists. The second
   apply does it; nothing else re-runs.
-- Warp if you want it, and Warp's own settings, which cannot be versioned.
+- If Windows Terminal or VS Code does not show `MesloLGS NF` or `Fira Code`
+  after the first apply, restart the application. If it still does not, sign
+  out of Windows and back in: Windows loads a user's fonts at sign-in.
+- Warp if you want it, and Warp's own settings, which cannot be versioned. Set
+  Terminal font to `MesloLGS NF` under Settings, Appearance, Text. Warp keeps
+  that setting on the device and does not sync it, so a rebuilt machine starts
+  with Warp's default font.
 - Sign in to Telegram: scan its QR code from the phone app.
 - Mark the LAN Private, or the firewall blocks SSH. Script 11 warns when no
   network is. In an elevated terminal, with the LAN adapter's name (`Ethernet`
@@ -842,8 +849,8 @@ this machine that isn't in the repo, the system has a hole in it.
 README.md                             this document (ignored, not deployed)
 .chezmoi.toml.tmpl                    PowerShell interpreter, -ExecutionPolicy Bypass
 .chezmoiignore                        keeps README and the manifest source-only
-.chezmoidata.toml                     pins: sshd's pwsh, and the Ruby toolchains' dates
-.chezmoiexternal.toml.tmpl            sshd's pwsh, a pinned ZIP, one folder per version
+.chezmoidata.toml                     pins: sshd's pwsh, the Ruby toolchains' dates, the fonts
+.chezmoiexternal.toml.tmpl            sshd's pwsh, a pinned ZIP, one folder per version; the font files
 .gitattributes                        * text=auto eol=lf
 winget-packages.json                  36 packages; read by script 01, never deployed
 administrators_authorized_keys        public keys for SSH; read by script 11, never deployed
@@ -871,6 +878,8 @@ dot_local/bin/ruby-toolchains-packages.sh   its helper: install MSYS2 packages a
   run_once_after_10_disable_warp_autostart.ps1     veto Warp's run-at-sign-in registration
   run_onchange_after_11_openssh_server.ps1.tmpl    SSH server: keys only, LAN only, ZIP pwsh
   run_once_after_12_winget_pin_edge.ps1            keep winget upgrade --all off Edge
+  run_onchange_after_13_register_fonts.ps1.tmpl    register the downloaded fonts for this user
+  run_onchange_after_14_terminal_font.ps1.tmpl     set Terminal's font to MesloLGS NF
 ```
 
 Two scripts share the number `02` because they are one job: making PowerShell
@@ -908,6 +917,8 @@ script 05 points its `defaultProfile` at pwsh 7. On a rebuild this lands one
 apply late: Terminal generates its pwsh profile only when opened after pwsh is
 installed, so the first apply skips the step, and the script is `run_onchange`
 on `settings.json` so the next apply after Terminal has been opened finishes it.
+Script 14 sets the font of every profile to `MesloLGS NF` the same way, and
+waits for `settings.json` the same way — see [Fonts](#fonts--downloaded-by-chezmoi-registered-by-a-script).
 
 **Warp is a personal preference, installed by hand.** It is deliberately
 excluded from the manifest (its installer is extremely slow and opens a welcome
@@ -1346,6 +1357,81 @@ Delete it by hand when nothing else needs it; a rebuilt machine never has one.
 **`mise uninstall` and the junction.** Removing a Ruby removes the junction and
 leaves the toolchain it pointed at.
 
+### Fonts — downloaded by chezmoi, registered by a script
+
+Two fonts are shared with Neuromancer and rama, because VS Code's Settings Sync
+carries the font settings to every host and not the fonts:
+
+| Font family | Used by |
+| --- | --- |
+| `MesloLGS NF` | Windows Terminal and the VS Code terminal |
+| `Fira Code` | the VS Code editor |
+
+`MesloLGS NF` matters here even though the PowerShell prompt uses no Nerd Font
+glyphs. The zsh prompt on the other two hosts is powerlevel10k, and an ssh
+session from sophon draws it with sophon's font. Without the font its
+separators and icons show as boxes.
+
+winget cannot install a font on this machine: winget 1.29 has a `winget-font`
+source, but the feature is experimental and off, and the source has neither
+font. So the fonts take the route of any file winget cannot supply:
+
+1. `.chezmoiexternal.toml.tmpl` downloads ten files into
+   `%LOCALAPPDATA%\Microsoft\Windows\Fonts`, where Windows keeps fonts
+   installed for one user. The pins are in `.chezmoidata.toml`: a commit and a
+   checksum per file for `MesloLGS NF`, a release and one archive checksum for
+   `Fira Code`. The folder is not `exact`, so fonts installed by hand stay.
+2. Script 13 registers each file under
+   `HKCU\Software\Microsoft\Windows NT\CurrentVersion\Fonts`. A file in the
+   folder is not a font until it has a value there. The value's name is the
+   font's name followed by ` (TrueType)`, and its data is the file's path.
+3. Script 14 sets `profiles.defaults.font.face` in Windows Terminal's
+   `settings.json`. chezmoi starts it with Windows PowerShell 5.1 like every
+   script, and it starts itself again under the pwsh 7 in `~/.local/opt`,
+   because 5.1 cannot parse a `settings.json` that has comments. It skips when
+   the file does not exist yet. Anything else that stops it setting the font
+   fails the apply, so that chezmoi runs it again: a file it cannot parse, a
+   file with no `profiles.defaults`, a file Terminal saved while the script
+   was running, or a write that failed. It matches member names by exact case,
+   as Terminal does, so a `Font` member does not count as the font. It writes
+   the new text to a file beside `settings.json` and swaps the two, so the
+   settings are never half written, and the old file stays as
+   `settings.json.font.bak`.
+
+Each font's name in `.chezmoidata.toml` is what `GetFontResourceInfoW` reports
+for the file, which is the name Windows uses when it installs a font itself.
+To add a font, add its file, name and checksum there; the external and the
+script both read that list.
+
+Fira Code's variable font is left out. The VS Code setting uses only named
+weights, which the six static files provide.
+
+**Updating a font needs a step by hand.** Windows keeps an installed font file
+open for as long as the font is loaded, so nothing can replace it: opening one
+of these files for writing fails with "being used by another process". An apply
+after a pin has changed in `.chezmoidata.toml` therefore fails when chezmoi
+downloads the new file, before script 13 runs. An apply with unchanged pins is
+not affected, because chezmoi does not rewrite a file that already matches.
+
+To update a font, unload it first:
+
+1. Delete that font's values under
+   `HKCU\Software\Microsoft\Windows NT\CurrentVersion\Fonts`.
+2. Sign out of Windows and back in, so that no session has the font loaded.
+3. Run `chezmoi apply`. It downloads the new files, and script 13 registers
+   them again.
+
+This procedure has not been run: neither font has had a release since the pins
+were set. If it turns out not to free the files, the fix is the one sshd's pwsh
+uses, a folder per version.
+
+Windows loads a user's fonts at sign-in. Script 13 also loads them into the
+current session and announces the change, so that an apply run at the desktop
+should not need a sign-out. Over ssh that reaches no desktop, and running
+applications see the fonts after a restart or the next sign-in.
+
+VS Code's own settings are not touched: Settings Sync owns them.
+
 ### Git hooks — husky's `init.sh`
 
 Hooks run under Git for Windows' `sh.exe` and never see the PowerShell profile.
@@ -1534,7 +1620,8 @@ unreachable objects, so the old commit may remain fetchable by SHA afterwards.
 - **Windows Terminal's `settings.json`.** Terminal rewrites it whenever its
   generated profiles change, so chezmoi reported permanent drift — and constant
   false drift trains you to ignore the one command that tells you the repo is
-  honest. Script 05 patches only `defaultProfile` instead.
+  honest. Scripts 05 and 14 patch only `defaultProfile` and the default font
+  instead.
 - **Anything inside a OneDrive-synced folder.** Two writers, one path, no
   arbiter. Reach those locations through a static stub pointing at an unsynced
   file chezmoi owns.

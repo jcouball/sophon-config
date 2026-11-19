@@ -1,0 +1,96 @@
+# Register the two shared fonts, MesloLGS NF and Fira Code, for this user.
+#
+# .chezmoiexternal.toml.tmpl downloads the files into
+# %LOCALAPPDATA%\Microsoft\Windows\Fonts, the folder Windows uses for fonts
+# installed for one user. A file there is not a font until it has a value under
+# HKCU\Software\Microsoft\Windows NT\CurrentVersion\Fonts, which is what
+# Windows writes when you right-click a font and choose Install. This script
+# writes the same values: the name is the font's name followed by
+# " (TrueType)", and the data is the file's full path.
+#
+# AFTER_, because the externals have to be on disk first. chezmoi downloads
+# externals before it runs an after_ script.
+#
+# RUN_ONCHANGE, keyed on a hash of the whole [fonts] table in
+# .chezmoidata.toml, so that any change there runs it again: a font added, or a
+# font replaced by a newer build. The hash covers the pins and not only the
+# file names, because a new Fira Code release keeps the same file names.
+#
+# It is idempotent: a registry value that is already correct is left alone.
+# The session step below runs every time, because a re-run with every value
+# already correct means a file was replaced under the same name.
+{{ $fonts := concat .fonts.meslo.files .fonts.firaCode.files -}}
+# fonts hash: {{ .fonts | toJson | sha256sum }}
+
+$ErrorActionPreference = 'Stop'
+
+$fonts = @(
+{{- range $fonts }}
+    @{ File = {{ .file | squote }}; Name = {{ .name | squote }} }
+{{- end }}
+)
+
+$fontDir = Join-Path $env:LOCALAPPDATA 'Microsoft\Windows\Fonts'
+$key = 'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\Fonts'
+
+# Fail before changing anything when a file is missing. A value that points at
+# a file that is not there is a font Windows lists and cannot draw.
+$missing = @($fonts | Where-Object { -not (Test-Path -LiteralPath (Join-Path $fontDir $_.File)) })
+if ($missing) {
+    Write-Warning ("Font files missing from ${fontDir}: " + (($missing | ForEach-Object { $_.File }) -join ', '))
+    Write-Warning 'They are chezmoi externals. Run `chezmoi apply` again and read its download errors.'
+    exit 1
+}
+
+if (-not (Test-Path $key)) {
+    New-Item -Path $key -Force | Out-Null
+}
+
+$registered = 0
+foreach ($font in $fonts) {
+    $path = Join-Path $fontDir $font.File
+    $valueName = "$($font.Name) (TrueType)"
+    $current = (Get-ItemProperty -Path $key -Name $valueName -ErrorAction SilentlyContinue).$valueName
+    if ($current -ne $path) {
+        New-ItemProperty -Path $key -Name $valueName -Value $path -PropertyType String -Force | Out-Null
+        $registered++
+    }
+}
+
+if ($registered -eq 0) {
+    Write-Host "All $($fonts.Count) shared fonts are already registered."
+} else {
+    Write-Host "Registered $registered of $($fonts.Count) shared fonts for this user."
+}
+
+# Windows reads those registry values at sign-in. To make the fonts usable
+# before then, load each one into the current session and tell running
+# applications that the font list changed.
+#
+# This only helps when the script runs in the desktop session. Over ssh it
+# loads the fonts into the ssh session, which has no desktop, and the broadcast
+# reaches nothing. So nothing here may fail the script: the registry values
+# above are what makes the fonts permanent.
+try {
+    Add-Type -Namespace SophonConfig -Name FontSession -MemberDefinition @'
+[DllImport("gdi32.dll", CharSet = CharSet.Unicode)]
+public static extern int AddFontResourceW(string path);
+
+[DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+public static extern IntPtr SendMessageTimeoutW(
+    IntPtr hWnd, uint msg, UIntPtr wParam, IntPtr lParam,
+    uint flags, uint timeout, out UIntPtr result);
+'@
+    foreach ($font in $fonts) {
+        [void][SophonConfig.FontSession]::AddFontResourceW((Join-Path $fontDir $font.File))
+    }
+    # HWND_BROADCAST, WM_FONTCHANGE, SMTO_ABORTIFHUNG, one second per window.
+    $result = [UIntPtr]::Zero
+    [void][SophonConfig.FontSession]::SendMessageTimeoutW(
+        [IntPtr]0xffff, 0x001D, [UIntPtr]::Zero, [IntPtr]::Zero, 0x0002, 1000, [ref]$result)
+} catch {
+    Write-Warning "Could not load the fonts into this session: $($_.Exception.Message)"
+}
+
+Write-Host ('If an application does not list MesloLGS NF or Fira Code, restart it. ' +
+            'If it still does not, sign out of Windows and back in.')

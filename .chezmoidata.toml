@@ -57,3 +57,63 @@
             "gawk", "grep", "libtool", "m4", "make", "patch", "sed",
             "texinfo", "texinfo-tex", "wget", "pkgconf",
         ]
+
+# The two fonts shared with Neuromancer and rama: MesloLGS NF for every
+# terminal, Fira Code for the VS Code editor. winget cannot install a font
+# here, so .chezmoiexternal.toml.tmpl downloads the files into the per-user
+# font folder and script 13 registers them. See "Fonts" in the README.
+#
+# CHANGING A PIN NEEDS A STEP BY HAND. Windows keeps an installed font file
+# open, so chezmoi cannot replace one and the apply fails at the download. See
+# "Fonts" in the README before changing a commit, version or checksum here.
+#
+# `name` is what Windows calls the font, and what script 13 registers it as.
+# It is the description GetFontResourceInfoW reports for the file, which is
+# the name Windows itself uses when it installs a font.
+[fonts]
+    # Four files from github.com/romkatv/powerlevel10k-media, at one commit.
+    # Each sha256 is of the .ttf file.
+    [fonts.meslo]
+        commit = "145eb9fbc2f42ee408dacd9b22d8e6e0e553f83d"
+        [[fonts.meslo.files]]
+            file = "MesloLGS NF Regular.ttf"
+            name = "MesloLGS NF Regular"
+            sha256 = "d97946186e97f8d7c0139e8983abf40a1d2d086924f2c5dbf1c29bd8f2c6e57d"
+        [[fonts.meslo.files]]
+            file = "MesloLGS NF Bold.ttf"
+            name = "MesloLGS NF Bold"
+            sha256 = "b6c0199cf7c7483c8343ea020658925e6de0aeb318b89908152fcb4d19226003"
+        [[fonts.meslo.files]]
+            file = "MesloLGS NF Italic.ttf"
+            name = "MesloLGS NF Italic"
+            sha256 = "6f357bcbe2597704e157a915625928bca38364a89c22a4ac36e7a116dcd392ef"
+        [[fonts.meslo.files]]
+            file = "MesloLGS NF Bold Italic.ttf"
+            name = "MesloLGS NF Bold Italic"
+            sha256 = "56b4131adecec052c4b324efb818dd326d586dbc316fc68f98f1cae2eb8d1220"
+
+    # Six static weights from one release archive of github.com/tonsky/FiraCode.
+    # The sha256 is of the zip. Change `version` and `sha256` together. The
+    # archive's variable font, variable_ttf/FiraCode-VF.ttf, is left out: the
+    # VS Code setting uses only named weights, which these six provide.
+    [fonts.firaCode]
+        version = "6.2"
+        sha256 = "0949915ba8eb24d89fd93d10a7ff623f42830d7c5ffc3ecbf960e4ecad3e3e79"
+        [[fonts.firaCode.files]]
+            file = "FiraCode-Regular.ttf"
+            name = "Fira Code Regular"
+        [[fonts.firaCode.files]]
+            file = "FiraCode-Bold.ttf"
+            name = "Fira Code Bold"
+        [[fonts.firaCode.files]]
+            file = "FiraCode-Light.ttf"
+            name = "Fira Code Light"
+        [[fonts.firaCode.files]]
+            file = "FiraCode-Medium.ttf"
+            name = "Fira Code Medium"
+        [[fonts.firaCode.files]]
+            file = "FiraCode-Retina.ttf"
+            name = "Fira Code Retina"
+        [[fonts.firaCode.files]]
+            file = "FiraCode-SemiBold.ttf"
+            name = "Fira Code SemiBold"
