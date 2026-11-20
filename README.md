@@ -311,24 +311,69 @@ $env:MSYSTEM = 'UCRT64'
 The package list includes the libraries Ruby's own build looks for: OpenSSL,
 libyaml, libffi, zlib and gmp.
 
-Ruby's build also needs a Ruby that already works, its "baseruby". The
-toolchain's shell ignores the Windows `PATH`, so no installed Ruby is on it.
-Add one inside the shell, at the end of `PATH` so that the toolchain's own
-programs still come first:
+Ruby's build needs two programs the toolchain does not have: a Ruby that
+already works, its "baseruby", and `git`. The toolchain's shell ignores the
+Windows `PATH`, so neither is on it. Add both inside the shell, at the end of
+`PATH` so that the toolchain's own programs still come first:
 
 ```powershell
 $env:MSYSTEM = 'UCRT64'
-& "$HOME\.local\opt\msys2\gcc16\usr\bin\bash.exe" -lc 'PATH=$PATH:$(cygpath -f - <<<$LOCALAPPDATA)/mise/installs/ruby/4.0.6/bin; ruby --version; gcc --version'
+& "$HOME\.local\opt\msys2\gcc16\usr\bin\bash.exe" -lc 'PATH=$PATH:$(cygpath -f - <<<$LOCALAPPDATA)/mise/installs/ruby/4.0.6/bin:$(cygpath -f - <<<$PROGRAMFILES)/Git/cmd; ruby --version; git --version; gcc --version'
 ```
 
 The command has no quotes in it on purpose. Windows PowerShell 5.1 and pwsh 7
 pass a double quote inside an argument to a program differently, so a quoted
 path would work in one and not the other. `cygpath -f - <<<` reads the path
-from its input, where bash does not split it at spaces, so a profile path
-with a space in it still works.
+from its input, where bash does not split it at spaces, so a path with a
+space in it, as `C:\Program Files` has, still works.
 
-Not yet done with one of these toolchains: the last source build on this
-machine used `C:\msys64`, before they existed.
+`git` is not optional. Without it `configure` records `HAVE_GIT='no'`, and
+`make` then stops with "No rule to make target '../ruby/revision.h'".
+
+To build, clone Ruby with Git for Windows as usual, then start the toolchain's
+shell and work in it:
+
+```powershell
+git clone https://github.com/ruby/ruby.git "$HOME\ruby"
+$env:MSYSTEM = 'UCRT64'
+& "$HOME\.local\opt\msys2\gcc16\usr\bin\bash.exe" -l
+```
+
+```sh
+PATH=$PATH:$(cygpath -f - <<<$LOCALAPPDATA)/mise/installs/ruby/4.0.6/bin:$(cygpath -f - <<<$PROGRAMFILES)/Git/cmd
+home=$(cygpath -f - <<<$USERPROFILE)
+cd "$home/ruby" && ./autogen.sh
+mkdir -p "$home/ruby-build" && cd "$home/ruby-build"
+../ruby/configure --prefix="$home/ruby-install" --disable-install-doc
+make -j$(nproc)
+make install
+make test
+```
+
+The build goes in a folder of its own, so the checkout stays clean and a
+second build with another toolchain can sit beside it.
+
+**The result runs in the toolchain's shell and nowhere else, unless the
+toolchain is on `PATH`.** `ruby.exe` loads `libgmp-10.dll` from the
+toolchain's `ucrt64\bin`, and its extensions load OpenSSL, libyaml, libffi
+and zlib from the same folder. Started from PowerShell it exits at once with
+`-1073741515` (a DLL was not found) and prints nothing. To run it outside the
+shell, put that folder first:
+
+```powershell
+$env:Path = "$HOME\.local\opt\msys2\gcc16\ucrt64\bin;$env:Path"
+& "$HOME\ruby-install\bin\ruby.exe" -v
+```
+
+Done once, on 2026-11-19, with the gcc 16 toolchain and Ruby's `master` at
+`5cefc5f` (4.1.0dev). No package had to be added to the toolchain. `configure`
+took 4.5 minutes, `make` 7 minutes on 16 cores, `make install` 1 minute and
+`make test` 2 minutes. The build folder came to 1.8 GB and the installed Ruby
+to 0.5 GB. `make test` passed, and the built Ruby loaded `openssl`, `yaml`,
+`fiddle`, `zlib` and `json` and reported GMP 6.3.0. `make install` skipped one
+bundled gem, `syslog`, with "extensions not found or build failed".
+
+Not done: `make test-all`, and a build with the gcc 14 or gcc 15 toolchain.
 
 #### Add a new runtime
 
