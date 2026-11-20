@@ -16,7 +16,7 @@ nothing here needs a conditional.
 | Terminal | Windows Terminal (managed) · Warp (by hand) |
 | Fonts | MesloLGS NF for terminals · Fira Code for the VS Code editor |
 | Package manager | winget 1.29 |
-| Runtimes | mise, 7 tools |
+| Runtimes | mise, 8 tools |
 | WSL | 2.5.10 (Ubuntu 24.04.3, deliberately bare) |
 | Remote access | OpenSSH server, keys only, LAN only |
 | Rebuild | **certified** on a clean VM |
@@ -76,7 +76,8 @@ Afterwards, by hand:
 - Open Windows Terminal once, then run `chezmoi apply` again. Terminal
   generates its pwsh profile the first time it opens after pwsh is installed,
   and script 05 cannot set the default profile before that exists. The second
-  apply does it; nothing else re-runs.
+  apply does it. Script 05 is keyed on the file it has just changed, so
+  `chezmoi status` lists it until one more apply, which finds nothing to do.
 - If Windows Terminal or VS Code does not show `MesloLGS NF` or `Fira Code`
   after the first apply, restart the application. If it still does not, sign
   out of Windows and back in: Windows loads a user's fonts at sign-in.
@@ -711,7 +712,7 @@ is kept as the record of the run:
 
 ```powershell
 Start-Transcript -Path "$HOME\checks.log"
-mise ls --current          # 7 tools, none "(missing)"
+mise ls --current          # 8 tools, none "(missing)"
 Test-Path 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC'
 $env:JAVA_HOME             # populated, in a NEW shell
 cmd /c "cat --version"     # resolves - spawned Unix tools work outside Git Bash (script 08)
@@ -720,7 +721,7 @@ cmd /c "cat --version"     # resolves - spawned Unix tools work outside Git Bash
 Get-Service sshd | Select-Object Status, StartType        # Running, Automatic (script 11)
 (Get-ItemProperty HKLM:\SOFTWARE\OpenSSH).DefaultShell    # ...\.local\opt\pwsh-7.6.7\pwsh.exe
 sshd -T | Select-String '^(passwordauthentication|authenticationmethods) '   # no; publickey
-chezmoi status | Out-Host  # empty
+chezmoi status | Out-Host  # empty, or script 05 alone: see below
 ```
 
 Then the Ruby toolchains (script 06), in the same shell, so that they land in
@@ -731,8 +732,25 @@ the same transcript:
 & "$HOME\.local\bin\ruby-toolchains.ps1" -LinkOnly          # one line, "ruby 4.0.6 -> gcc16 (built with gcc 16)", no warning
 ruby -e "require 'ruby_installer/runtime'; puts RubyInstaller::Runtime.msys2_installation.msys_path" | Out-Host   # ...\mise\installs\ruby\4.0.6\msys64
 gem install json --platform ruby --no-document --install-dir "$env:TEMP\gemcheck" | Out-Host   # "Building native extensions", "1 gem installed"
+```
+
+Then the fonts (scripts 13 and 14), still in the same shell:
+
+```powershell
+(Get-ChildItem "$env:LOCALAPPDATA\Microsoft\Windows\Fonts" -Filter *.ttf).Count   # 10
+(Get-Item 'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\Fonts').Property    # 10 names ending "(TrueType)"
+Select-String '"face"' "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json"   # MesloLGS NF
 Stop-Transcript
 ```
+
+If the last check finds nothing, Terminal had not written `settings.json` when
+script 14 ran. Open Terminal once, run `chezmoi apply`, and check again. Also
+look at Terminal's Settings, Defaults, Appearance: the font reads `MesloLGS NF`.
+
+`chezmoi status` lists script 05 when the last apply was the one in which it
+set the default profile, because that apply changed the file the script is
+keyed on. Run `chezmoi apply` once more: script 05 reports that Terminal
+already defaults to PowerShell 7, and `chezmoi status` is then empty.
 
 The `| Out-Host` on three of the checks is what puts their output in the
 transcript. Typed at the prompt in Windows PowerShell, a program started
@@ -797,7 +815,7 @@ machine) and stays tool-agnostic, so it survives if chezmoi is ever replaced.
 | 0 | git + gh | **Transport.** If a setting exists only on the machine and not here, it is not managed and will be lost. |
 | 1 | **chezmoi** | **Declaration and orchestrator.** Config file contents, and the manifest of what should be installed. Its scripts call the layers below; it installs nothing itself. |
 | 2 | **winget** | **Applications and stable CLI tools.** Git, VS Code, Chrome, 1Password, Docker, `gh`, `jq`, `rg`, chezmoi itself. Driven from `winget-packages.json`. |
-| 3 | **mise** | **All seven runtimes and build tools** — ant, go, java, node, python, ruby, rust. Pinned exactly; never swept. |
+| 3 | **mise** | **All eight runtimes and tools** — actionlint, ant, go, java, node, python, ruby, rust. Pinned exactly; never swept. |
 | 4 | npm · uv · gem · cargo | **Libraries and runtime-scoped tools.** `prettier`, `yamllint`, `@github/copilot`. Subordinate to layer 3. |
 | 5 | **topgrade** | **Owns nothing.** Dispatches layers 2 and 4 plus Windows Update, VS Code, gh extensions and chezmoi. |
 | 6 | WSL | **Escape hatch** for POSIX-only tooling — `skopeo`, `redis`, `htop`, GNU autotools. Separate machine, separate management. |
@@ -858,7 +876,7 @@ sshd_config                           sshd's config; copied to C:\ProgramData\ss
 
 dot_config/powershell/profile.ps1     mise activation; the real profile
 dot_config/husky/init.sh              git hooks get mise on PATH
-dot_config/mise/config.toml           the seven pinned runtimes, and the hook that links a new Ruby
+dot_config/mise/config.toml           the eight pinned tools, and the hook that links a new Ruby
 AppData/Roaming/topgrade.toml         update policy - NOT dot_config, see below
 dot_local/bin/sshd-pwsh-drift.ps1.tmpl   weekly, from topgrade: warn when sshd's pwsh lags
 dot_local/bin/mise-path.ps1              put mise back on the user PATH after winget drops it
@@ -1570,6 +1588,30 @@ toolchains.
 The second run, with script 12 fixed, went from start to finish without
 input. This is the first defect's lesson again: the failure that reports
 nothing is the one a clean machine is needed for.
+
+### The third certification: shared fonts (November 2026)
+
+Scripts 13 and 14 are new provisioning scripts, so the rebuild was run on the
+VM again on 2026-11-19, from `main` after the change had merged. It found no
+defect in either script. All ten font files were downloaded into a font folder
+chezmoi had to create, all ten were registered, and Terminal's font was set,
+all in the first apply.
+
+Two things here could only be tested on the VM. No font had ever been
+installed for `certuser`, so neither the folder nor any registry value
+existed. And script 14 started itself again under the pwsh 7 in
+`~/.local/opt`, which the same apply had downloaded a few minutes earlier.
+
+One path was not tested. The rebuild was run inside Windows Terminal, so
+`settings.json` already existed, and script 14 never took its "no settings
+yet" exit. That exit has only been run on sophon, against a path with no file.
+
+The run found two faults in the playbook, both now corrected:
+
+| Fault | Why it had not been noticed |
+| --- | --- |
+| The checks expected 7 mise tools; there are 8 | actionlint was added without the count being changed |
+| The checks expected an empty `chezmoi status`, and it listed script 05 | script 05 changes the file it is keyed on, so it is listed until one more apply; the playbook did not say so |
 
 ### Running it again
 
