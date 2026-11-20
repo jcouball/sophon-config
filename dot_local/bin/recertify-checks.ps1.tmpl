@@ -1,0 +1,199 @@
+# Check that a machine built from this repo came out as the repo describes.
+#
+#   pwsh -File "$HOME\.local\bin\recertify-checks.ps1" [-OutFile results.json]
+#
+# These are the checks of "Re-certify the rebuild" in the README, as code.
+# recertify.ps1 runs them on the certification VM after a rebuild. They can
+# also be run on sophon.
+#
+# TWO OF THEM DO SOMETHING. They are not read-only:
+#
+#   - "every Ruby is linked to a toolchain" runs ruby-toolchains.ps1 -LinkOnly,
+#     the command mise's hook runs. It reports each link, and it makes again
+#     any link it finds wrong or unusable over ssh. On a healthy machine that
+#     is nothing; on one with a bad link, running the checks repairs it.
+#   - "a native gem builds" builds one gem into a temporary folder and deletes
+#     the folder.
+#
+# RUN IT IN A NEW SHELL, WITH THE PROFILE, ELEVATED. Several checks are about
+# what a new shell sees: PATH as the rebuild left it, and JAVA_HOME, which the
+# profile sets. `sshd -T` reads the host keys and needs administrator rights.
+#
+# Each check prints PASS or FAIL. A failure prints what was expected and what
+# was found. The exit code is 1 if any check failed. Outcomes are checked, not
+# exit codes: a script that returned zero has proved nothing.
+#
+# A TEMPLATE, so that what is expected comes from the pins of the same commit
+# the machine was built from: the toolchains, sshd's pwsh, the fonts.
+
+param(
+    # Also write the results here, as JSON.
+    [string]$OutFile
+)
+
+$results = New-Object System.Collections.Generic.List[object]
+
+# Run one check. $Run produces the evidence; $Test is given that text and
+# says whether it is what was expected.
+function Test-Outcome {
+    param([string]$Name, [string]$Expect, [scriptblock]$Run, [scriptblock]$Test)
+
+    try {
+        # An error is kept as its message. As an object it prints as a
+        # position in this file, which says nothing.
+        $found = (& $Run 2>&1 | ForEach-Object {
+            if ($_ -is [System.Management.Automation.ErrorRecord]) { "ERROR: $($_.Exception.Message)" } else { $_ }
+        } | Out-String).Trim()
+        $pass = [bool](& $Test $found)
+    } catch {
+        $found = "ERROR: $($_.Exception.Message)"
+        $pass = $false
+    }
+    $results.Add([pscustomobject]@{ name = $Name; pass = $pass; expect = $Expect; found = $found })
+    if ($pass) {
+        Write-Host "PASS  $Name"
+    } else {
+        Write-Host "FAIL  $Name"
+        Write-Host "      expected: $Expect"
+        foreach ($line in ($found -split "`r?`n")) { Write-Host "      found:    $line" }
+    }
+}
+
+# --- runtimes -------------------------------------------------------------
+
+# The number of tools is read from the deployed config, so adding a tool does
+# not make this check wrong.
+$miseConfig = Join-Path $HOME '.config\mise\config.toml'
+$toolCount = 0
+$inTools = $false
+foreach ($line in (Get-Content $miseConfig -ErrorAction SilentlyContinue)) {
+    if ($line -match '^\s*\[') { $inTools = ($line.Trim() -eq '[tools]'); continue }
+    if ($inTools -and $line -match '^\s*["\w.-]+\s*=') { $toolCount++ }
+}
+
+Test-Outcome 'mise has every pinned tool' "$toolCount tools, none missing" {
+    mise ls --current
+} {
+    param($found)
+    $rows = @($found -split "`r?`n" | Where-Object { $_.Trim() -and $_ -notmatch '^Tool\s' })
+    $toolCount -gt 0 -and $rows.Count -eq $toolCount -and $found -notmatch '\(missing\)'
+}
+
+Test-Outcome 'the MSVC tools are installed' 'the folder exists' {
+    Test-Path 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC'
+} { param($found) $found -eq 'True' }
+
+Test-Outcome 'JAVA_HOME is set in a new shell' 'a folder that exists' {
+    $env:JAVA_HOME
+} { param($found) $found -and (Test-Path $found) }
+
+Test-Outcome 'cmd.exe resolves cat (script 08)' 'GNU coreutils' {
+    cmd /c 'cat --version'
+} { param($found) $found -match 'GNU coreutils' }
+
+Test-Outcome 'no persisted MISE_*_VERSION pins (script 09)' 'none' {
+    [Environment]::GetEnvironmentVariables('User').Keys -like 'MISE_*_VERSION'
+} { param($found) -not $found }
+
+Test-Outcome 'Warp autostart is vetoed (script 10)' 'an odd first byte' {
+    (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run').Warp[0]
+} { param($found) $found -match '^\d+$' -and ([int]$found -band 1) -eq 1 }
+
+# --- ssh (script 11) -------------------------------------------------------
+
+Test-Outcome 'sshd is running and starts with Windows' 'Running, Automatic' {
+    $service = Get-Service sshd
+    "$($service.Status), $($service.StartType)"
+} { param($found) $found -eq 'Running, Automatic' }
+
+Test-Outcome "sshd's shell is the pinned pwsh" '...\.local\opt\pwsh-{{ .sshdPwsh.version }}\pwsh.exe' {
+    (Get-ItemProperty HKLM:\SOFTWARE\OpenSSH).DefaultShell
+} { param($found) $found -like '*\.local\opt\pwsh-{{ .sshdPwsh.version }}\pwsh.exe' }
+
+Test-Outcome 'sshd accepts keys only' 'passwordauthentication no; authenticationmethods publickey' {
+    sshd -T | Select-String '^(passwordauthentication|authenticationmethods) ' | ForEach-Object { $_.Line }
+} {
+    param($found)
+    $found -match '(?m)^passwordauthentication no\s*$' -and $found -match '(?m)^authenticationmethods publickey\s*$'
+}
+
+# --- chezmoi ----------------------------------------------------------------
+
+Test-Outcome 'chezmoi has nothing left to do' 'no output' {
+    chezmoi status
+} { param($found) -not $found }
+
+# --- Ruby toolchains (script 06) -------------------------------------------
+
+$toolchains = @('cache'{{ range $major, $pin := .rubyToolchains.gcc }}, 'gcc{{ $major }}'{{ end }})
+
+Test-Outcome 'every pinned toolchain is there' ($toolchains -join ' ') {
+    (Get-ChildItem (Join-Path $HOME '.local\opt\msys2') -Directory).Name | Sort-Object
+} {
+    param($found)
+    $have = @($found -split '\s+' | Where-Object { $_ })
+    -not (Compare-Object $have ($toolchains | Sort-Object))
+}
+
+Test-Outcome 'every Ruby is linked to a toolchain' 'one "ruby X -> gccN (built with gcc N)" line per Ruby, and no warning' {
+    # The worker reports with Write-Host, which is not ordinary output.
+    & (Join-Path $HOME '.local\bin\ruby-toolchains.ps1') -LinkOnly *>&1
+} {
+    param($found)
+    $lines = @($found -split "`r?`n" | Where-Object { $_.Trim() })
+    $lines.Count -ge 1 -and -not ($lines | Where-Object { $_ -notmatch '^ruby \S+ -> gcc\d+ \(built with gcc \d+\)$' })
+}
+
+Test-Outcome 'the pinned Ruby finds its own msys64' '...\mise\installs\ruby\<version>\msys64' {
+    ruby -e "require 'ruby_installer/runtime'; puts RubyInstaller::Runtime.msys2_installation.msys_path"
+} { param($found) $found -match '\\mise\\installs\\ruby\\[^\\]+\\msys64$' }
+
+$gemDir = Join-Path ([IO.Path]::GetTempPath()) ("recertify-gem-" + [guid]::NewGuid().ToString('N'))
+Test-Outcome 'a native gem builds' '"Building native extensions" and "1 gem installed"' {
+    gem install json --platform ruby --no-document --install-dir $gemDir
+} { param($found) $found -match 'Building native extensions' -and $found -match '1 gem installed' }
+Remove-Item $gemDir -Recurse -Force -ErrorAction SilentlyContinue
+
+# --- fonts (scripts 13 and 14) ---------------------------------------------
+
+$fonts = @(
+{{- range (concat .fonts.meslo.files .fonts.firaCode.files) }}
+    @{ File = {{ .file | squote }}; Name = {{ .name | squote }} }
+{{- end }}
+)
+$fontDir = Join-Path $env:LOCALAPPDATA 'Microsoft\Windows\Fonts'
+
+Test-Outcome 'every shared font file is there' "$($fonts.Count) files" {
+    $fonts | Where-Object { -not (Test-Path -LiteralPath (Join-Path $fontDir $_.File)) } | ForEach-Object { "missing: $($_.File)" }
+} { param($found) -not $found }
+
+Test-Outcome 'every shared font is registered' "$($fonts.Count) values, each naming its file" {
+    $key = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\Fonts'
+    foreach ($font in $fonts) {
+        $value = $key."$($font.Name) (TrueType)"
+        if ($value -ne (Join-Path $fontDir $font.File)) { "wrong or missing: $($font.Name) (TrueType) = $value" }
+    }
+} { param($found) -not $found }
+
+Test-Outcome "Windows Terminal's font is MesloLGS NF" '"face": "MesloLGS NF" in settings.json' {
+    $settings = Join-Path $env:LOCALAPPDATA 'Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json'
+    if (Test-Path $settings) {
+        if ([IO.File]::ReadAllText($settings) -match '"face"\s*:\s*"([^"]*)"') { $Matches[1] } else { 'no face is set' }
+    } else {
+        'settings.json does not exist: open Windows Terminal once, then chezmoi apply'
+    }
+} { param($found) $found -eq 'MesloLGS NF' }
+
+# ---------------------------------------------------------------------------
+
+$failed = @($results | Where-Object { -not $_.pass })
+Write-Host ''
+Write-Host "$($results.Count - $failed.Count) of $($results.Count) checks passed."
+
+if ($OutFile) {
+    $json = ConvertTo-Json -InputObject $results.ToArray() -Depth 4
+    [IO.File]::WriteAllText($OutFile, $json, (New-Object Text.UTF8Encoding $false))
+}
+
+if ($failed) { exit 1 }
+exit 0

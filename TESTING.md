@@ -17,14 +17,16 @@ stopped are covered by the owner's own agent instructions, not here.
 
 A docs-only change needs none of them.
 
-The README's playbook certifies `main`: its `chezmoi init --apply
-jcouball/sophon-config` takes the default branch. To certify a change before
-it merges, name the branch, and put the commit the VM ran in the pull request:
+`recertify.ps1` certifies `main` unless it is told otherwise. To certify a
+change before it merges, name the branch. The run's log names the commit the
+VM built; put that and the verdict in the pull request:
 
 ```powershell
-chezmoi init --apply --branch <branch> jcouball/sophon-config
-chezmoi git -- log --oneline -1
+& "$HOME\.local\bin\recertify.ps1" -Branch <branch>
 ```
+
+The branch has to be pushed: the VM clones it from GitHub. By hand, the same
+thing is `chezmoi init --apply --branch <branch> jcouball/sophon-config`.
 
 ## Do not
 
@@ -241,6 +243,7 @@ gave. Read it before changing the script, and run those cases again.
 | 11 `openssh_server`, `sshd-pwsh-drift.ps1` | #1 |
 | 12 `winget_pin_edge` | #2, #9 |
 | 13 `register_fonts`, 14 `terminal_font` | #15 |
+| `recertify.ps1`, `recertify-step.ps1`, `recertify-checks.ps1` | #25 |
 | The rebuild as a whole | "Certification" in the README |
 
 ## Departing from this file

@@ -67,6 +67,12 @@ OpenSSH server capability sometimes needs a restart before its service exists.
 Restart, open a new elevated terminal, and run `chezmoi apply`. chezmoi re-runs
 script 11, which failed, and anything after it.
 
+Script 11 can also stop saying that Windows would not install the OpenSSH
+server, error `0x800f0950`. That is Windows Update: a new machine installs
+updates in its first hour, and Windows will not add a capability while one is
+going in. The cure is the same, and the script's warning gives it. Let Windows
+Update finish, restart, and run `chezmoi apply` from a new elevated terminal.
+
 This path is **certified** — run end to end on a clean Windows 11 Enterprise
 25H2 VM as a different user. See [Certification](#certification) for what that
 found.
@@ -770,16 +776,108 @@ script, a new package manager, a change to `.chezmoi.toml.tmpl`, or a managed
 file whose location depends on the machine. Not needed for adding a package or
 bumping a runtime — those exercise proven ground.
 
+One command, on sophon, elevated: from an elevated terminal, or over ssh, where
+the session is elevated already.
+
 ```powershell
-# on the host, ELEVATED - every Hyper-V cmdlet needs it, and unelevated they
-# return empty lists rather than errors
+& "$HOME\.local\bin\recertify.ps1"                    # certify main
+& "$HOME\.local\bin\recertify.ps1" -Branch <branch>   # certify a change before it merges
+```
+
+It takes 50 minutes to a little over an hour, most of it downloads, and needs
+nobody once it has started. It:
+
+1. Restores the VM's `clean-windows` checkpoint.
+2. Runs [Rebuild from nothing](#rebuild-from-nothing) inside the VM as written,
+   each part in a new process, as a person would use a new terminal: install
+   chezmoi; `chezmoi init --apply`, elevated; open Windows Terminal once and
+   apply twice more.
+3. Runs the checks, `recertify-checks.ps1`, in a new elevated pwsh.
+4. Copies every log and the check results to `~\cert\<time>-<branch>`.
+5. Prints each step's outcome, each failed check with what it expected and
+   found, and `CERTIFIED` or `NOT CERTIFIED`. The exit code is 0 only for the
+   first.
+
+`recertify.log` in that folder is the whole run as it was printed, and
+`apply.log` is the rebuild's own output. Put the verdict, the commit it names
+and anything it found in the pull request, and record the run under
+[Certification](#certification).
+
+The VM is left running as the rebuild left it, to be looked at. The next run
+restores the checkpoint.
+
+**The checks verify outcomes, not exit codes.** A script returning zero has
+proved nothing. They are in `dot_local/bin/recertify-checks.ps1.tmpl`, and what
+they expect comes from the pins of the commit the VM was built from. They can
+be run on sophon, in a new elevated shell:
+
+```powershell
+pwsh -File "$HOME\.local\bin\recertify-checks.ps1"
+```
+
+Two of the checks are not read-only. One runs `ruby-toolchains.ps1 -LinkOnly`,
+as mise's hook does, which makes again any Ruby link it finds wrong: on a
+machine with a bad link, running the checks repairs it. The other builds a gem
+into a temporary folder and deletes the folder.
+
+Two of them deserve a word. Script 09 is a designed no-op on a clean VM: its
+check confirms nothing crept in, not that anything was deleted. Script 10's
+check is the interesting one there: it proves the Warp veto is **pre-seeded
+before Warp is ever installed**, which is the scenario the script exists for
+and the one an already-configured machine cannot test.
+
+The SSH checks stop at the server's configuration. A login needs an authorized
+private key, and none lives on the VM, so try one from an authorized machine
+against sophon after the next real apply.
+
+**How it reaches the VM.** PowerShell Direct, which needs no network: the VM's
+firewall blocks ssh. That session has no desktop, and parts of the rebuild
+need one, so it is used only to start each step and read its log. The step
+itself runs as a scheduled task in the desktop session of the signed-in user,
+which is why the checkpoint has to be taken while signed in.
+
+**The password.** PowerShell Direct needs `certuser`'s password. The script
+reads the first line of `~\.config\recertify\password.txt` if that file
+exists, and asks otherwise, saying that it looked. Nothing typed is saved. The
+file is what lets the script run over ssh, where nobody can be asked. It is a
+plain file, which is acceptable for a password that opens nothing but a VM
+with no network path to it. Do not reuse that password.
+
+**A step that stops.** Each step's output goes to a file and its input stays
+the console, so a program that stops to ask a question waits, as it would for
+a person. Nobody answers. A step whose log has not grown for 30 minutes
+(`-StallMinutes`) is reported as stalled, with the last lines of its log, and
+the run ends. A rebuild that needs an answer has failed. The longest quiet
+stretch in a good run is script 11 installing the OpenSSH server, which has
+taken ten minutes.
+
+**One run at a time.** A second run for the same VM refuses to start while one
+is going, whether the first was started at the desktop or over ssh. It would
+otherwise restore the checkpoint under the first.
+
+**`-NoRestore`** uses the VM as it is, for trying the script. Such a run ends
+with `NOT A CERTIFICATION` and exit code 2, whatever its checks say.
+
+**What it does not do.** It does not restart the VM. If script 11 asks for a
+restart, the run ends as not certified with that message in the log; do the
+rest by hand, below. It does not test an ssh login. And it changes nothing on
+sophon except the folder under `~\cert`.
+
+#### By hand
+
+When the script cannot be used, or to look at one step closely. On the host,
+elevated:
+
+```powershell
+# every Hyper-V cmdlet needs elevation, and unelevated they return empty
+# lists rather than errors
 Restore-VMCheckpoint -VMName sophon-cert -Name 'clean-windows' -Confirm:$false
 vmconnect.exe localhost sophon-cert
 ```
 
-Then run the [rebuild](#rebuild-from-nothing) **unmodified** — the point is to
-test what this README says, not a convenient variant — wrapped in a transcript,
-because without a log the failures have to be inferred from wreckage:
+In the VM, run the [rebuild](#rebuild-from-nothing) **unmodified** — the point
+is to test what this README says, not a convenient variant. Both of its steps:
+install chezmoi in an ordinary terminal, then in a new elevated one:
 
 ```powershell
 Start-Transcript -Path "$HOME\bootstrap.log"
@@ -791,85 +889,26 @@ The transcript is not the whole log. Windows PowerShell does not record what
 chezmoi's scripts write to the console, so `bootstrap.log` holds the start and
 end times and only the last screenful of output. The full output exists only
 in the terminal window. **Before closing that window**, right-click its tab,
-choose Export Text, and save it as `$HOME\terminal.txt`. The November 2026 run
-closed the window first and lost everything before the last toolchain.
+choose Export Text, and save it as `$HOME\terminal.txt`.
 
-Verify **outcomes, not exit codes**. A script returning zero has proved nothing.
-Run the checks in a new shell and in a transcript of their own, so their output
-is kept as the record of the run:
+Open Windows Terminal once, run `chezmoi apply` twice, then run the checks in
+a new elevated shell:
 
 ```powershell
-Start-Transcript -Path "$HOME\checks.log"
-mise ls --current          # 8 tools, none "(missing)"
-Test-Path 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC'
-$env:JAVA_HOME             # populated, in a NEW shell
-cmd /c "cat --version"     # resolves - spawned Unix tools work outside Git Bash (script 08)
-[Environment]::GetEnvironmentVariables('User').Keys -like 'MISE_*_VERSION'   # empty (script 09)
-(Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run').Warp[0]   # odd = vetoed (script 10)
-Get-Service sshd | Select-Object Status, StartType        # Running, Automatic (script 11)
-(Get-ItemProperty HKLM:\SOFTWARE\OpenSSH).DefaultShell    # ...\.local\opt\pwsh-7.6.7\pwsh.exe
-sshd -T | Select-String '^(passwordauthentication|authenticationmethods) '   # no; publickey
-chezmoi status | Out-Host  # empty, or script 05 alone: see below
+pwsh -File "$HOME\.local\bin\recertify-checks.ps1" -OutFile "$HOME\checks.json" | Tee-Object "$HOME\checks.txt"
 ```
 
-Then the Ruby toolchains (script 06), in the same shell, so that they land in
-the same transcript:
-
-```powershell
-(Get-ChildItem "$HOME\.local\opt\msys2" -Directory).Name   # cache gcc14 gcc15 gcc16
-& "$HOME\.local\bin\ruby-toolchains.ps1" -LinkOnly          # one line, "ruby 4.0.6 -> gcc16 (built with gcc 16)", no warning
-ruby -e "require 'ruby_installer/runtime'; puts RubyInstaller::Runtime.msys2_installation.msys_path" | Out-Host   # ...\mise\installs\ruby\4.0.6\msys64
-gem install json --platform ruby --no-document --install-dir "$env:TEMP\gemcheck" | Out-Host   # "Building native extensions", "1 gem installed"
-```
-
-Then the fonts (scripts 13 and 14), still in the same shell:
-
-```powershell
-(Get-ChildItem "$env:LOCALAPPDATA\Microsoft\Windows\Fonts" -Filter *.ttf).Count   # 10
-(Get-Item 'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\Fonts').Property    # 10 names ending "(TrueType)"
-Select-String '"face"' "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json"   # MesloLGS NF
-Stop-Transcript
-```
-
-If the last check finds nothing, Terminal had not written `settings.json` when
-script 14 ran. Open Terminal once, run `chezmoi apply`, and check again. Also
-look at Terminal's Settings, Defaults, Appearance: the font reads `MesloLGS NF`.
-
-`chezmoi status` lists script 05 when the last apply was the one in which it
-set the default profile, because that apply changed the file the script is
-keyed on. Run `chezmoi apply` once more: script 05 reports that Terminal
-already defaults to PowerShell 7, and `chezmoi status` is then empty.
-
-The `| Out-Host` on three of the checks is what puts their output in the
-transcript. Typed at the prompt in Windows PowerShell, a program started
-through a mise shim writes straight to the window and the transcript misses
-it; piped, its output passes through PowerShell and is recorded. Tested on the
-VM: `ruby -e "puts 1"` was missing from the log and the same command with
-`| Out-Host` was in it. As a backup, export this window's text as well, to
-`$HOME\checks.txt`.
-
-Copy the logs out of the VM before reverting it. The VM's firewall blocks SSH
-until its network is marked Private, so use PowerShell Direct. Run these on
-sophon, not in the VM, in an elevated terminal, and one line at a time: the
-second line asks for `certuser`'s password, and a line pasted after it is
-typed into that prompt.
+Copy the logs out of the VM before reverting it. Run these on sophon, not in
+the VM, in an elevated terminal, and one line at a time: the second line asks
+for `certuser`'s password, and a line pasted after it is typed into that
+prompt.
 
 ```powershell
 New-Item -ItemType Directory -Force "$HOME\cert" | Out-Null
 $s = New-PSSession -VMName sophon-cert -Credential certuser
-Copy-Item -FromSession $s -Path C:\Users\certuser\bootstrap.log, C:\Users\certuser\terminal.txt, C:\Users\certuser\checks.log, C:\Users\certuser\checks.txt -Destination "$HOME\cert\"
+Copy-Item -FromSession $s -Path C:\Users\certuser\bootstrap.log, C:\Users\certuser\terminal.txt, C:\Users\certuser\checks.txt, C:\Users\certuser\checks.json -Destination "$HOME\cert\"
 Remove-PSSession $s
 ```
-
-Two of the checks in the first list deserve a word. Script 09 is a designed no-op on a clean VM — its
-check confirms nothing crept in, not that anything was deleted. Script 10's
-check is the interesting one here: it proves the Warp veto is **pre-seeded
-before Warp is ever installed**, which is the scenario the script exists for
-and the one an already-configured machine cannot test.
-
-The SSH checks stop at the server's configuration. A login needs an authorized
-private key, and none lives on the VM, so try one from an authorized machine
-against sophon after the next real apply.
 
 See [Certification](#certification) for why this exists and what it found.
 
@@ -972,6 +1011,9 @@ dot_local/bin/mise-path.ps1              put mise back on the user PATH after wi
 dot_local/bin/ruby-toolchains.ps1.tmpl   build the MSYS2 toolchains, link each Ruby to one
 dot_local/bin/ruby-toolchains-packages.sh   its helper: install MSYS2 packages as of a date
 dot_local/bin/ruby-toolchains-archive.ps1   write each cached package set as a .tar, for the release
+dot_local/bin/recertify.ps1                 rebuild the certification VM and check it, in one command
+dot_local/bin/recertify-step.ps1            its helper: one step of the rebuild, run inside the VM
+dot_local/bin/recertify-checks.ps1.tmpl     the checks a rebuilt machine has to pass
 
 .chezmoiscripts/
   run_onchange_01_winget_install.ps1.tmpl          winget import
@@ -1667,6 +1709,32 @@ Two traps: connect with `vmconnect` **before** starting the VM, or the
 unelevated they return *empty lists* rather than access-denied, so a checkpoint
 can appear not to exist when it does.
 
+**Automatic updates are turned off in the checkpoint.** A restored VM is as
+old as its checkpoint, and Windows starts installing what it has missed. An
+update that goes in while the rebuild runs makes script 11 fail (see the fourth
+certification, below), so whether a run passed depended on timing. The
+checkpoint carries the policy that stops Windows scanning and installing by
+itself:
+
+```powershell
+New-Item 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' -Force | Out-Null
+Set-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' -Name NoAutoUpdate -Value 1 -Type DWord
+```
+
+The Windows Update service is left alone, because script 11 installs the
+OpenSSH server through it; with the policy set, that install still works. Set
+the policy again whenever a new `clean-windows` checkpoint is made, before
+taking it. `recertify.ps1` warns when the VM it restored does not have it. This
+makes the VM unlike a new machine in one respect, on purpose: a new machine can
+hit the same failure, and [Rebuild from nothing](#rebuild-from-nothing) says
+what to do then.
+
+The current `clean-windows` was taken on 2026-11-20 from the checkpoint of
+2026-10-22, which is kept as `clean-windows-2026-10-22`, with nothing changed
+but that policy. It still carries October's Windows, and a restart that was
+pending when the first checkpoint was taken; rebuilds have always passed with
+that.
+
 ### The second certification: shared Ruby toolchains (November 2026)
 
 Replacing script 06 with the shared toolchains changed what a rebuild does, so
@@ -1713,6 +1781,47 @@ The run found two faults in the playbook, both now corrected:
 | --- | --- |
 | The checks expected 7 mise tools; there are 8 | actionlint was added without the count being changed |
 | The checks expected an empty `chezmoi status`, and it listed script 05 | script 05 changes the file it is keyed on, so it is listed until one more apply; the playbook did not say so |
+
+### The fourth certification: the toolchain copies, and the run itself (November 2026)
+
+Two changes to provisioning scripts had merged without a run: script 04
+putting mise back on `PATH`, and the toolchain worker building from the copies
+kept in a release. The run was also the first by `recertify.ps1`, on
+2026-11-20, from the branch that added it. The first run failed and the next
+two passed.
+
+**The first run failed, and not because of the repo.** Script 11 stopped with
+`Add-WindowsCapability failed. Error code = 0x800f0950`, and nothing after it
+ran. The checkpoint was a month old, and the restored VM had started
+installing what it had missed: its update history shows activity from the
+first minute, and two updates went in during the 40 minutes before script 11.
+The day before, a run by hand from the same checkpoint had passed. The
+difference was timing.
+
+| Defect | Why it had not been seen |
+| --- | --- |
+| A rebuild can fail at script 11 when Windows installs an update while it runs | earlier runs happened to reach script 11 first |
+| The playbook's checks existed only as text to paste | they had always been run by hand |
+| Nothing told a failed rebuild apart from a VM that had changed under it | nobody had looked |
+
+So the checkpoint now has automatic updates off, `recertify.ps1` says before a
+run whether that holds and after it which updates went in, and script 11 and
+[Rebuild from nothing](#rebuild-from-nothing) say what the error means on a
+real machine and what to do. One thing first believed and then found wrong: a pending restart
+does not by itself cause the failure. The checkpoint has carried one since it
+was made.
+
+**The second run passed**, in 48 minutes with no input: every step, and 17 of
+17 checks, with no update installed during it. A third, of the commit that
+gave script 11 its message for that error, passed the same way in 66 minutes;
+the difference was the speed of the downloads. All three toolchains were built
+from the copies in the release and MSYS2's server was not asked for a dated
+package, which is the first time that path ran on a clean machine. The OpenSSH
+server took ten minutes to install in both passing runs, against seconds the
+day before; Windows' own servicing was busy.
+
+Not tested by this run: the fallback to MSYS2's server, which needs the copies
+to be missing, and a rebuild during which Windows asks for a restart.
 
 ### Running it again
 
