@@ -953,6 +953,7 @@ this machine that isn't in the repo, the system has a hole in it.
 
 ```text
 README.md                             this document (ignored, not deployed)
+TESTING.md                            how a change is tested before it merges (ignored, not deployed)
 .chezmoi.toml.tmpl                    PowerShell interpreter, -ExecutionPolicy Bypass
 .chezmoiignore                        keeps README and the manifest source-only
 .chezmoidata.toml                     pins: sshd's pwsh, the Ruby toolchains' dates, the fonts
