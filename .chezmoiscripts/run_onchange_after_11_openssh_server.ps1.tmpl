@@ -251,7 +251,21 @@ try {
     if ($capability.State -eq 'InstallPending') { throw $restartMessage }
     if ($capability.State -ne 'Installed') {
         Write-Host "Installing $($capability.Name) ..."
-        $install = Add-WindowsCapability -Online -Name $capability.Name
+        try {
+            $install = Add-WindowsCapability -Online -Name $capability.Name
+        } catch {
+            # 0x800f0950 is Windows refusing to add a capability while an
+            # update is being installed. A new machine installs updates in its
+            # first hour, so a rebuild can meet this; the certification VM
+            # did. The error says none of that, and names no cure.
+            if ("$_" -match '0x800f0950') {
+                throw ("Windows would not install $($capability.Name) (error 0x800f0950). It refuses " +
+                       'while an update is being installed, which a new machine does in its first ' +
+                       'hour. Let Windows Update finish, restart Windows, then run `chezmoi apply` ' +
+                       'again from an elevated terminal.')
+            }
+            throw
+        }
         if ($install.RestartNeeded) { throw $restartMessage }
     } else {
         Write-Host 'OpenSSH server already installed'
