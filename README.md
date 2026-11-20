@@ -852,7 +852,7 @@ README.md                             this document (ignored, not deployed)
 .chezmoidata.toml                     pins: sshd's pwsh, the Ruby toolchains' dates, the fonts
 .chezmoiexternal.toml.tmpl            sshd's pwsh, a pinned ZIP, one folder per version; the font files
 .gitattributes                        * text=auto eol=lf
-winget-packages.json                  36 packages; read by script 01, never deployed
+winget-packages.json                  35 packages; read by script 01, never deployed
 administrators_authorized_keys        public keys for SSH; read by script 11, never deployed
 sshd_config                           sshd's config; copied to C:\ProgramData\ssh by script 11
 
