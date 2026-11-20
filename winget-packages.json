@@ -102,9 +102,6 @@
           "PackageIdentifier": "Microsoft.WSL"
         },
         {
-          "PackageIdentifier": "Symless.Synergy"
-        },
-        {
           "PackageIdentifier": "Telegram.TelegramDesktop"
         },
         {
