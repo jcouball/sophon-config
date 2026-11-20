@@ -9,3 +9,4 @@ administrators_authorized_keys
 sshd_config
 README.md
 CLAUDE.md
+TESTING.md
