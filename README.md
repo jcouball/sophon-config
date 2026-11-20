@@ -1468,9 +1468,20 @@ not in the list gets today's version of it, which in the gcc 14 and 15
 toolchains pacman refuses, for the reason above. Add the package to
 `[rubyToolchains.packages]` instead, where it is dated like the rest.
 
-**`C:\msys64` is not removed.** Once every Ruby is linked, nothing this repo
-manages resolves to it, but the script does not delete a directory it did not
-create. It stays the fallback RubyInstaller would find for a Ruby with no link.
+**`C:\msys64` was removed by hand, and the script will not remove one.**
+Ruby 3.4.2's `ridk install` created it, and it held gcc 14.2. Once every Ruby
+was linked, nothing this repo manages resolved to it, but it stayed the
+fallback RubyInstaller finds for a Ruby whose link cannot be followed, so a
+broken link would have shown up as a gem built with the wrong compiler and
+not as an error. It was uninstalled on 2026-11-19 with its own uninstaller,
+which also removes its Start menu folder and its entry in Installed apps:
+
+```powershell
+C:\msys64\uninstall.exe pr --confirm-command
+```
+
+The script does not delete a directory it did not create. If a later
+`ridk install` puts one back, remove it the same way.
 Delete it by hand when nothing else needs it; a rebuilt machine never has one.
 
 **`mise uninstall` and the junction.** Removing a Ruby removes the junction and
