@@ -215,13 +215,28 @@ function Get-BaseArchive {
     if (-not (Test-Path $path)) {
         New-Item -ItemType Directory -Force -Path $cache | Out-Null
         $tag = $pins.msys2Base.version -replace '^(\d{4})(\d{2})(\d{2})$', '$1-$2-$3'
-        $url = "https://github.com/msys2/msys2-installer/releases/download/$tag/$name"
-        Write-Host "  Downloading $url"
+        # MSYS2's own release first. The copy kept with the package sets is
+        # for the day MSYS2 no longer has this version. Either way the file
+        # is refused below unless its checksum is the pinned one.
+        $urls = @("https://github.com/msys2/msys2-installer/releases/download/$tag/$name")
+        if ($pins.archive) { $urls += "$($pins.archive)/$name" }
         # 5.1 offers TLS 1.0 unless told otherwise, and draws a progress bar
         # that makes a download several times slower.
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         $ProgressPreference = 'SilentlyContinue'
-        Invoke-WebRequest -Uri $url -OutFile "$path.partial" -UseBasicParsing
+        $problem = $null
+        foreach ($url in $urls) {
+            Write-Host "  Downloading $url"
+            try {
+                Invoke-WebRequest -Uri $url -OutFile "$path.partial" -UseBasicParsing
+                $problem = $null
+                break
+            } catch {
+                $problem = $_.Exception.Message
+                Write-Host "  That download failed: $problem"
+            }
+        }
+        if ($problem) { throw "Could not download $name from any of: $($urls -join ', ')" }
         Move-Item "$path.partial" $path -Force
     }
 
@@ -292,7 +307,9 @@ function Install-Toolchain {
     $helper = ConvertTo-BashWord (ConvertTo-MsysPath (Join-Path $PSScriptRoot 'ruby-toolchains-packages.sh'))
     $cache = ConvertTo-BashWord (ConvertTo-MsysPath (Join-Path $Root 'cache\ucrt64'))
     $names = @($pins.packages.ucrt64) -join ' '
-    if ((Invoke-Msys $dir "bash $helper $($Pin.date) $cache $names") -ne 0) {
+    # The helper looks there for a copy of the set when the cache has none.
+    $archive = if ($pins.archive) { 'RUBY_TOOLCHAIN_ARCHIVE=' + (ConvertTo-BashWord $pins.archive) + ' ' } else { '' }
+    if ((Invoke-Msys $dir "${archive}bash $helper $($Pin.date) $cache $names") -ne 0) {
         throw ("Installing the packages as of $($Pin.date) failed. If a file is gone from MSYS2's server, " +
                "see 'Add or move a gcc toolchain' in the README.")
     }

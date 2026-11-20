@@ -18,8 +18,15 @@
 # each set came to (set-<day>-<id>.list). A rebuild of the same set installs
 # from that list and never asks the server, which matters because MSYS2
 # deletes old files without notice: once a file is gone from the listing, the
-# listing would select a different version, or none. The server is asked again
-# only when the list or one of its files is missing.
+# listing would select a different version, or none.
+#
+# A machine with no cache has no list. For that, RUBY_TOOLCHAIN_ARCHIVE names
+# a place that keeps a copy of each set as one file, set-<day>-<id>.tar,
+# holding the list and every file it names. When the cache cannot supply a
+# set, that copy is tried before the server, because it is the set a toolchain
+# was already built from and the server may no longer be able to produce it.
+# The server is asked only when there is no copy, or the copy is refused, or
+# installing from it leaves a requested package out.
 set -euo pipefail
 
 day=$1
@@ -48,20 +55,154 @@ install_set() {
 # A set is the day plus the packages asked for, in any order.
 set_list=$cache/set-$day-$(printf '%s\n' "$@" | sort | sha256sum | cut -c1-12).list
 
-if [ -s "$set_list" ]; then
+# Fill `files` from the set's list. Fails when there is no list, or the cache
+# lacks a file the list names or its signature.
+cached_set() {
+    local file
     files=()
-    complete=1
+    [ -s "$set_list" ] || return 1
     while read -r file; do
-        [ -s "$cache/$file" ] && [ -s "$cache/$file.sig" ] || { complete=0; break; }
+        [ -s "$cache/$file" ] && [ -s "$cache/$file.sig" ] || return 1
         files+=("$cache/$file")
     done < "$set_list"
-    if [ "$complete" = 1 ]; then
-        echo "  Using the ${#files[@]} cached files recorded for $day"
-        install_set "${files[@]}"
-        exit
-    fi
-    echo "  The cache no longer holds every file recorded for $day; asking the server"
+}
+
+# The requested packages that are not installed, on one line. A package may
+# be installed under the name with -git added or removed, as pick() below
+# explains, so each of the three is asked about.
+not_installed() {
+    local name candidate found
+    for name in "$@"; do
+        found=0
+        for candidate in "$name" "$name-git" "${name%-git}"; do
+            if pacman -T "$prefix$candidate" > /dev/null 2>&1; then found=1; break; fi
+        done
+        [ "$found" = 1 ] || printf '%s ' "$name"
+    done
+}
+
+# Install the files cached_set found, then check that the packages asked for
+# are all there. A list is only as good as whoever wrote it: one that leaves a
+# package out installs cleanly and would be taken for the whole set. Such a
+# list is deleted, and the caller goes on to the next source.
+install_recorded() {
+    local missing
+    install_set "${files[@]}" || exit
+    missing=$(not_installed "${requested_names[@]}")
+    [ -n "$missing" ] || exit 0
+    echo "  The recorded set leaves these not installed: $missing"
+    rm -f "$set_list"
+    return 1
+}
+
+# Whether a signature is a valid one for a file, made by a key pacman's
+# keyring trusts. This is the check `pacman-key --verify` makes; that command
+# itself refuses to run here, over the permissions of the keyring folder.
+signed_by_msys2() {
+    local status
+    status=$(gpg --homedir /etc/pacman.d/gnupg --batch --no-tty --status-fd 1 --verify "$1" "$2" 2> /dev/null) || return 1
+    grep -q '^\[GNUPG:\] VALIDSIG ' <<< "$status" &&
+        grep -qE '^\[GNUPG:\] TRUST_(FULLY|ULTIMATE) ' <<< "$status"
+}
+
+# The file name MSYS2 gives a package, worked out from what the package says
+# it is. A signature only shows that MSYS2 built a file, not which one: another
+# genuine package under this name would pass it. A file name spells an epoch
+# "1~" where the package says "1:".
+package_file_name() {
+    bsdtar -xOf "$1" .PKGINFO 2> /dev/null | awk -F' = ' '
+        $1 == "pkgname" { name = $2 }
+        $1 == "pkgver" { version = $2 }
+        $1 == "arch" { arch = $2 }
+        END { sub(/:/, "~", version); print name "-" version "-" arch ".pkg.tar.zst" }'
+}
+
+# Fetch the copy of this set and let it into the cache. Fails, leaving the
+# cache as it was, unless the copy is a flat archive of ordinary files that
+# holds the set's list and every package the list names, each with a
+# signature that verifies against MSYS2's key and each the package its file
+# name says it is.
+#
+# The copy is unpacked beside the cache and checked there. A file that was
+# unpacked straight into the cache would be found by cached_set on every later
+# run, so one bad package would stop this set being built until somebody
+# deleted it by hand. A file the cache already holds is never replaced.
+fetch_copy() {
+    local name=${set_list##*/}
+    name=${name%.list}
+    local tar=$cache/$name.tar.partial
+    local stage=$cache/.copy-$name
+    local plain='^[A-Za-z0-9@._+~-]+$'
+    local listing names file suffix
+
+    refuse() {
+        rm -rf "$tar" "$stage"
+        echo "  $1"
+        return 1
+    }
+
+    echo "  Looking for a copy of the set at $RUBY_TOOLCHAIN_ARCHIVE/$name.tar"
+    curl -fsSL "$RUBY_TOOLCHAIN_ARCHIVE/$name.tar" -o "$tar" ||
+        { refuse 'There is no copy to download'; return 1; }
+
+    # The long listing starts each line with the entry's type: "-" for an
+    # ordinary file. A link could point a later write somewhere else.
+    listing=$(bsdtar -tvf "$tar") ||
+        { refuse 'The copy is not a tar archive'; return 1; }
+    ! grep -qv '^-' <<< "$listing" ||
+        { refuse 'The copy holds something that is not an ordinary file; not unpacking it'; return 1; }
+    # The names are read into a variable first. In a pipeline, grep stopping
+    # at the first bad name would end bsdtar early, and with pipefail that
+    # failure would be taken for "no bad name found".
+    names=$(bsdtar -tf "$tar") ||
+        { refuse 'The copy is not a tar archive'; return 1; }
+    ! grep -qvE "$plain" <<< "$names" ||
+        { refuse 'The copy holds a name that is not a plain file name; not unpacking it'; return 1; }
+
+    rm -rf "$stage"
+    mkdir "$stage"
+    bsdtar -xf "$tar" -C "$stage" ||
+        { refuse 'The copy could not be unpacked'; return 1; }
+    rm -f "$tar"
+
+    [ -s "$stage/$name.list" ] ||
+        { refuse 'The copy does not hold the list of its files'; return 1; }
+    while read -r file; do
+        [[ $file =~ $plain ]] ||
+            { refuse 'The list in the copy holds a name that is not a plain file name'; return 1; }
+        [ -s "$stage/$file" ] && [ -s "$stage/$file.sig" ] ||
+            { refuse "The copy does not hold the whole set: $file or its signature is missing"; return 1; }
+        signed_by_msys2 "$stage/$file.sig" "$stage/$file" ||
+            { refuse "The signature of $file in the copy does not verify"; return 1; }
+        [ "$(package_file_name "$stage/$file")" = "$file" ] ||
+            { refuse "The copy's $file is not the package its name says"; return 1; }
+    done < "$stage/$name.list"
+
+    while read -r file; do
+        for suffix in '' .sig; do
+            [ -s "$cache/$file$suffix" ] || mv "$stage/$file$suffix" "$cache/$file$suffix"
+        done
+    done < "$stage/$name.list"
+    # The list goes in last, so a run stopped before here leaves no list
+    # that names files the cache lacks.
+    mv "$stage/$name.list" "$set_list"
+    rm -rf "$stage"
+}
+
+requested_names=("$@")
+
+if cached_set; then
+    echo "  Using the ${#files[@]} cached files recorded for $day"
+    install_recorded || true
+elif [ -s "$set_list" ]; then
+    echo "  The cache no longer holds every file recorded for $day"
 fi
+
+if [ -n "${RUBY_TOOLCHAIN_ARCHIVE:-}" ] && fetch_copy && cached_set; then
+    echo "  Using the ${#files[@]} files of the downloaded copy"
+    install_recorded || true
+fi
+echo "  Asking the MSYS2 server"
 
 # One line per package file: name, version, yyyymmdd, file name as the URL
 # spells it. The server's directory listing is the only record of when each

@@ -245,15 +245,58 @@ toolchain to another date, delete its folder under `~\.local\opt\msys2` and
 apply, which builds it again from nothing; the Rubies linked to it need no
 relinking, because the folder comes back at the same path.
 
-**The old files have to still exist.** MSYS2 keeps years of old package files
-on its server but promises nothing. `~\.local\opt\msys2\cache` keeps every
-package file a toolchain used and, per date, the list of files that set came to
-(`ucrt64\set-<date>-<id>.list`). Rebuilding a toolchain on this machine installs
-the dated packages from that list without asking the server, so it still works
-after MSYS2 deletes a file. It does still need the network for the MSYS-side
-build tools, which are not dated. A new machine has no cache and needs the
-server for everything. If a build there fails with a download error for an old
-file, move the date to one whose files are all still on the server.
+**The old files have to still exist somewhere.** MSYS2 keeps years of old
+package files on its server but promises nothing. Two copies stand behind it:
+
+- `~\.local\opt\msys2\cache` keeps every package file a toolchain used and,
+  per date, the list of files that set came to
+  (`ucrt64\set-<date>-<id>.list`). Rebuilding a toolchain on this machine
+  installs the dated packages from that list without asking any server.
+- A release of this repo,
+  [`ruby-toolchain-sets`](https://github.com/jcouball/sophon-config/releases/tag/ruby-toolchain-sets),
+  keeps each set as one file, `set-<date>-<id>.tar`, holding the list, the
+  packages and their MSYS2 signatures. A machine with no cache, which is any
+  rebuilt machine, downloads the `.tar` for each toolchain it builds. The
+  release also keeps the base archive, which the worker downloads from there
+  if MSYS2's own release of it is gone.
+
+The order is cache, then the release, then MSYS2's server. The server comes
+last because it can no longer be relied on to produce the same set: once a
+file is gone from its listing, the listing selects a different version, or
+none. pacman checks every package against MSYS2's signing key wherever the
+file came from, and the base archive against its pinned checksum.
+
+A copy from the release is not trusted beyond that. It is unpacked beside the
+cache, and nothing from it enters the cache unless the whole of it passes:
+only ordinary files with plain names, the set's list, and every package the
+list names with a signature that verifies and contents that match its file
+name. A copy that fails is thrown away and the server is asked. After any
+install from a recorded list, the script checks that every requested package
+is installed; a list that left one out is deleted and the next source is
+tried.
+
+A build still needs the network for the MSYS-side build tools, which are not
+dated.
+
+**Upload a set once, after it is first built.** A new toolchain, a moved date
+or a changed package list makes a set with a new name, and that set is built
+from MSYS2's server because no copy of it exists yet. Once the apply has
+succeeded, write the copies and add the new ones to the release:
+
+```powershell
+& "$HOME\.local\bin\ruby-toolchains-archive.ps1" -OutDir "$HOME\toolchain-sets"
+gh release view ruby-toolchain-sets --repo jcouball/sophon-config --json assets --jq '.assets[].name'
+gh release upload ruby-toolchain-sets --repo jcouball/sophon-config "$HOME\toolchain-sets\<new file>"
+```
+
+The first command writes a `.tar` for every set in the cache and copies the
+base archive. The second lists what the release already has. Upload only the
+files it lacks: `gh release upload` refuses a name that is already there, and
+that is the point, since a file in the release is never replaced. A changed
+`msys2Base` pin means a new base archive to upload as well. Delete
+`~\toolchain-sets` afterwards.
+
+Until a new set is uploaded, only this machine's cache holds it.
 
 #### Build Ruby from source
 
@@ -882,6 +925,7 @@ dot_local/bin/sshd-pwsh-drift.ps1.tmpl   weekly, from topgrade: warn when sshd's
 dot_local/bin/mise-path.ps1              put mise back on the user PATH after winget drops it
 dot_local/bin/ruby-toolchains.ps1.tmpl   build the MSYS2 toolchains, link each Ruby to one
 dot_local/bin/ruby-toolchains-packages.sh   its helper: install MSYS2 packages as of a date
+dot_local/bin/ruby-toolchains-archive.ps1   write each cached package set as a .tar, for the release
 
 .chezmoiscripts/
   run_onchange_01_winget_install.ps1.tmpl          winget import
