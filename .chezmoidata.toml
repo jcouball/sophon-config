@@ -14,6 +14,14 @@
 # ~/.local/opt/msys2 and links each Ruby to the one it was built with. See
 # "Ruby native extensions" and "Add or move a gcc toolchain" in the README.
 [rubyToolchains]
+    # Where copies of the dated package sets and the base archive are kept, as
+    # assets of one release of this repo. MSYS2 deletes old package files
+    # without notice, and a rebuilt machine has no cache, so without a copy an
+    # old toolchain could stop being buildable. Each set is one .tar that is
+    # uploaded once and never changed. See "Add or move a gcc toolchain" in
+    # the README for how one is uploaded.
+    archive = "https://github.com/jcouball/sophon-config/releases/download/ruby-toolchain-sets"
+
     # The archive a new toolchain starts from, from
     # github.com/msys2/msys2-installer/releases. Only a toolchain built after
     # a change here uses the new one.
