@@ -1717,6 +1717,13 @@ remaining days away. With 30 days left as the earliest point worth doing it,
 that is 2026-12-21. Update this table whenever a rearm is captured in a new
 checkpoint.
 
+The two rearms are all this VM has. Each done just before expiry, they carry
+it to about 2027-04-20 and then about 2027-07-19. After that nothing extends
+the licence: restoring an older checkpoint does not, because it has the same
+install date. The VM then has to be made again from the evaluation ISO, which
+starts a new 90 days. This README gives the VM's settings above but not the
+steps to build it, so write them down when that is next done.
+
 Two traps: connect with `vmconnect` **before** starting the VM, or the
 "press any key to boot from CD" prompt expires and you land at
 "No operating system was loaded". And every Hyper-V cmdlet needs elevation —
