@@ -1703,6 +1703,20 @@ inherit the extension. The same refresh, restore, let Windows Update finish,
 restart, re-checkpoint, is worth doing before any certification run months
 after the last one, so updates do not reboot the VM mid-apply.
 
+The licence state of the `clean-windows` checkpoint, read on 2026-11-22 with
+`slmgr /dlv` and `slmgr /xpr` after a restore:
+
+| | |
+| --- | --- |
+| Installed | 2026-10-22 |
+| Licence expires | 2027-01-20 |
+| Rearms remaining | 2 |
+
+A rearm starts 90 days from the day it runs, so an early one throws the
+remaining days away. With 30 days left as the earliest point worth doing it,
+that is 2026-12-21. Update this table whenever a rearm is captured in a new
+checkpoint.
+
 Two traps: connect with `vmconnect` **before** starting the VM, or the
 "press any key to boot from CD" prompt expires and you land at
 "No operating system was loaded". And every Hyper-V cmdlet needs elevation —
