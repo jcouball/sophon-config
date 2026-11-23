@@ -14,11 +14,18 @@
 #   2. Runs "Rebuild from nothing" from the README inside the VM, each part
 #      in a new process, as a person would in a new terminal:
 #        install-chezmoi   winget install twpayne.chezmoi --source winget
-#        apply             chezmoi init --apply <repo>          (elevated)
+#        apply             chezmoi init --apply --branch <branch> <repo>  (elevated)
 #        terminal          open Windows Terminal once, then chezmoi apply twice
 #        checks            recertify-checks.ps1, in a new shell (elevated)
 #   3. Copies every log and the check results to ~\cert\<time>-<branch>.
 #   4. Prints which steps and checks passed. Exit code 0 only if all did.
+#   5. Writes result.json there: the verdict, what was built and the count of
+#      checks. record.ps1 reads it to record a CERTIFIED run as a tag.
+#
+# ONE DEPARTURE FROM THE README. Its command clones stable, the branch that
+# holds what has been certified. This clones what is about to be: main, or the
+# branch named with -Branch. Once a run is recorded, stable is moved to the
+# commit it built, and the README's command then clones the same files.
 #
 # Only one run at a time: a second for the same VM refuses to start.
 #
@@ -132,7 +139,7 @@ function Invoke-InVM {
     Invoke-Command -VMName $VMName -Credential $Credential -ScriptBlock $Script -ArgumentList $Arguments
 }
 
-Write-Line "Re-certifying $Repo, $(if ($Branch) { "branch $Branch" } else { 'the default branch' }), on $VMName"
+Write-Line "Re-certifying $Repo, branch $(if ($Branch) { $Branch } else { 'main' }), on $VMName"
 Write-Line "Results: $out"
 
 # --- 1. the clean machine ---------------------------------------------------
@@ -382,6 +389,8 @@ foreach ($step in $steps) {
     Write-Line ("{0,-16} {1}" -f $step.Name, $outcome)
 }
 
+$checks = @()
+$bad = @()
 $checksFile = Join-Path $out 'checks.json'
 if (Test-Path $checksFile) {
     # Windows PowerShell hands a JSON array on as one object. Piping it
@@ -415,6 +424,47 @@ if ($after) {
     }
 }
 
+# --- 5. the result, for record.ps1 --------------------------------------------
+
+# The commit and the tree the VM built, from the file the terminal step wrote.
+$builtCommit = ''
+$builtTree = ''
+$builtFile = Join-Path $out 'built.txt'
+if (Test-Path $builtFile) {
+    $builtLines = @(Get-Content $builtFile | ForEach-Object { $_.Trim() } | Where-Object { $_ -match '^[0-9a-f]{40}$' })
+    if ($builtLines.Count -eq 2) {
+        $builtCommit = $builtLines[0]
+        $builtTree = $builtLines[1]
+    }
+}
+if (-not $builtCommit) {
+    # Passing every check certifies nothing if the commit that passed is not
+    # known.
+    $failed = $true
+    Write-Line ''
+    Write-Line 'The commit the VM built could not be read. The apply may have failed before the clone.'
+} else {
+    Write-Line ''
+    Write-Line "Built: commit $builtCommit"
+    Write-Line "       tree   $builtTree"
+}
+
+$verdict = if ($NoRestore) { 'NOT A CERTIFICATION' } elseif ($failed) { 'NOT CERTIFIED' } else { 'CERTIFIED' }
+$resultObject = [ordered]@{
+    verdict      = $verdict
+    repo         = $Repo
+    branch       = $(if ($Branch) { $Branch } else { 'main' })
+    commit       = $builtCommit
+    tree         = $builtTree
+    # What the clean machine was, for the tag. A tag made from this run must
+    # not read as more than it was.
+    machine      = "VM $VMName from checkpoint $Checkpoint, $($facts.Text)"
+    checksPassed = $(if ($checks) { $checks.Count - $bad.Count } else { 0 })
+    checksTotal  = $(if ($checks) { $checks.Count } else { 0 })
+    started      = $stamp
+}
+[IO.File]::WriteAllText((Join-Path $out 'result.json'), ($resultObject | ConvertTo-Json), (New-Object Text.UTF8Encoding $false))
+
 Write-Line ''
 if ($NoRestore) {
     # Whatever passed, it passed on a machine that was not rebuilt from the
@@ -428,4 +478,11 @@ if ($failed) {
     exit 1
 }
 Write-Line "CERTIFIED. The logs are in $out"
+Write-Line ''
+if ($Branch) {
+    Write-Line "To record this certification: merge $Branch, run 'chezmoi update' on sophon, then"
+} else {
+    Write-Line "To record this certification: run 'chezmoi update' on sophon if its source is not at $builtCommit, then"
+}
+Write-Line "  & `"`$HOME\.local\bin\record.ps1`" -Log '$out'"
 exit 0

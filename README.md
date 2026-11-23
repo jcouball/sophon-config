@@ -65,8 +65,17 @@ winget install twpayne.chezmoi --source winget
 
 # NEW ELEVATED terminal - PATH is stale in the old one, and the manifest
 # contains machine-scope packages that stall silently without elevation
-chezmoi init --apply jcouball/windows-dev-config
+chezmoi init --apply --branch stable jcouball/windows-dev-config
 ```
+
+`stable` is the branch that holds the last certified commit;
+[Main and stable](#main-and-stable) says how it moves. The rebuilt machine's
+chezmoi source is then on `stable`. Leave it there until the configuration is
+next changed on sophon, or a certification is to be run, and put it on `main`
+then.
+
+If the apply stops because a download failed, run `chezmoi apply` again from a
+new elevated terminal. Every script is written to be run again.
 
 Script 11 can stop the first apply with a warning to restart Windows: the
 OpenSSH server capability sometimes needs a restart before its service exists.
@@ -122,7 +131,7 @@ back into the repo in the same sitting.
 ```powershell
 winget install <id>
 Update-WingetManifest
-chezmoi cd; git commit -am "Add <id>"; git push
+# then commit it on a branch and open a pull request: see "Main and stable"
 ```
 
 `Update-WingetManifest` is a function in the managed PowerShell profile. It
@@ -136,7 +145,7 @@ opens a welcome window mid-provisioning. Install it by hand when wanted.
 ```powershell
 winget uninstall --id <id> --exact --purge
 Update-WingetManifest
-chezmoi cd; git commit -am "Remove <id>"; git push
+# then commit it on a branch and open a pull request: see "Main and stable"
 ```
 
 The manifest has **no cleanup semantics**. Deleting a line never uninstalls
@@ -161,7 +170,7 @@ The script's header has the details.
 ```powershell
 mise use -g ruby@4.0.7
 chezmoi re-add ~/.config/mise/config.toml
-chezmoi cd; git commit -am "ruby 4.0.6 -> 4.0.7"; git push
+# then commit it on a branch and open a pull request: see "Main and stable"
 ```
 
 `mise use -g` rewrites `config.toml`, so that file must go back to the repo — it
@@ -463,7 +472,7 @@ chezmoi edit ~/.config/powershell/profile.ps1 --apply
 
 ```powershell
 chezmoi add ~/.gitconfig
-chezmoi cd; git commit -am "Manage gitconfig"
+# then commit it on a branch and open a pull request: see "Main and stable"
 ```
 
 Never a path inside OneDrive or any synced folder — use a stub that sources an
@@ -775,39 +784,128 @@ chezmoi git -- switch main
 chezmoi git -- pull
 ```
 
+### Main and stable
+
+A change merges to `main`. A rebuild clones `stable`. Between the two is a
+certification.
+
+| Branch | Holds | Moved by |
+| --- | --- | --- |
+| `main` | every merged change, certified or not | a pull request |
+| `stable` | the last commit that was certified | `record.ps1`, and nothing else |
+
+`main` is often ahead of `stable`, and that is the normal state, not a fault:
+several changes can merge and be certified together.
+
+```powershell
+chezmoi git -- fetch origin
+chezmoi git -- log --oneline origin/stable..origin/main    # merged, not yet certified
+```
+
+sophon's own chezmoi source follows `main`, not `stable`. It is the one machine
+this repo configures, so it is where the configuration is changed, and the
+second half of a certification is the checks passing on it: it has to take a
+commit before the commit can be certified. `stable` is for
+[Rebuild from nothing](#rebuild-from-nothing).
+
+A sophon that has just been rebuilt is the exception: its source is on
+`stable`, which is what the rebuild cloned. `chezmoi update` there keeps
+following `stable`, and `record.ps1` stops on a source that follows `stable`
+and says so. Put the source on `main` before certifying or changing anything:
+
+```powershell
+chezmoi git -- fetch origin; chezmoi git -- switch main; chezmoi update
+```
+
+**Changing something on sophon** ends the same way whatever was changed, and
+every playbook that says to commit on a branch means this. `chezmoi re-add` and
+`chezmoi add` write to the source's working tree and commit nothing, and `main`
+takes changes only through a pull request:
+
+```powershell
+chezmoi git -- switch -c fix/<what>
+chezmoi git -- add -A                 # chezmoi add makes new files, which commit -a leaves out
+chezmoi git -- commit -m "<what and why>"
+chezmoi git -- push -u origin fix/<what>
+gh pr create                          # in the source directory
+# after the merge:
+chezmoi git -- switch main; chezmoi update
+```
+
+While the pull request is open the source is on its branch, so the source and
+the machine agree and `chezmoi status` is empty.
+
+A ruleset stops `stable` being deleted or moved backwards. Nothing on GitHub
+can check that a commit pushed to it was certified. `record.ps1` is what keeps
+that true: it moves `stable` only to a commit it has just tagged, in the same
+push as the tag.
+
+mac-dev-config has two machines and so two roles, one following `stable`. Its
+README describes them.
+
 ### Re-certify the rebuild
 
-Do this after **any change to the bootstrap path**: a new or edited provisioning
-script, a new package manager, a change to `.chezmoi.toml.tmpl`, or a managed
-file whose location depends on the machine. Not needed for adding a package or
-bumping a runtime — those exercise proven ground.
+A pull request does not need a certification run to merge. It needs review, and
+whatever shows the change itself works: `TESTING.md` says how to test a change
+on sophon without changing the machine. The pull request says what was done.
+
+Certify `main` when there is something on it that a rebuild should get, with
+`main` applied on sophon first. A run takes 50 minutes to a little over an
+hour, so one run usually covers several changes.
+
+**What needs a run before it reaches `stable`:** anything a rebuild runs or
+reads. That is a provisioning script, `winget-packages.json`, the mise
+configuration, `.chezmoi.toml.tmpl`, `.chezmoidata.toml`, `.chezmoiexternal.toml.tmpl`,
+`.chezmoiignore`, a managed file, and the checks, `recertify-checks.ps1.tmpl`.
+A tightened check counts exactly as a changed script does, because the previous
+run passed a test that no longer exists.
+
+**What does not:** the README, `TESTING.md`, `CLAUDE.md` and the files under
+`tests`. A commit that changes only those can sit on `main` until the next run
+takes it along. `recertify.ps1`, `recertify-step.ps1` and `record.ps1` are
+files chezmoi writes, so a change to one is in the tree a run builds; each is
+tested by the next run it makes, and by its own tests where it has them.
+
+**One run can cover several changes.** It certifies the tip of `main`, and
+everything merged since the last tag is in that commit. When a run of several
+changes fails, the logs usually name the script. If they do not, certify the
+changes one at a time with `-Branch`.
+
+**To try one change in the VM before it merges**, name its branch. At an hour
+a run, this is for a new provisioning script or a change to the rebuild's own
+commands, where a clean machine finds what nothing else does. Run it once,
+after review, on the commit that will merge: a new commit on the branch means
+a new run.
 
 One command, on sophon, elevated: from an elevated terminal, or over ssh, where
 the session is elevated already.
 
 ```powershell
 & "$HOME\.local\bin\recertify.ps1"                    # certify main
-& "$HOME\.local\bin\recertify.ps1" -Branch <branch>   # certify a change before it merges
+& "$HOME\.local\bin\recertify.ps1" -Branch <branch>   # try a change before it merges
 ```
 
-It takes 50 minutes to a little over an hour, most of it downloads, and needs
-nobody once it has started. It:
+It needs nobody once it has started. Most of the time is downloads. It:
 
 1. Restores the VM's `clean-windows` checkpoint.
-2. Runs [Rebuild from nothing](#rebuild-from-nothing) inside the VM as written,
-   each part in a new process, as a person would use a new terminal: install
-   chezmoi; `chezmoi init --apply`, elevated; open Windows Terminal once and
-   apply twice more.
+2. Runs [Rebuild from nothing](#rebuild-from-nothing) inside the VM, each part
+   in a new process, as a person would use a new terminal: install chezmoi;
+   `chezmoi init --apply`, elevated; open Windows Terminal once and apply
+   twice more. One thing differs from the README's command: the branch.
+   The README clones `stable`, and the run clones what is about to be
+   certified, `main` or the branch given with `-Branch`.
 3. Runs the checks, `recertify-checks.ps1`, in a new elevated pwsh.
 4. Copies every log and the check results to `~\cert\<time>-<branch>`.
 5. Prints each step's outcome, each failed check with what it expected and
    found, and `CERTIFIED` or `NOT CERTIFIED`. The exit code is 0 only for the
    first.
+6. Writes `result.json` in that folder: the verdict, the commit and the tree
+   the VM built, what the VM was, and the count of checks. `record.ps1` reads
+   it. A CERTIFIED run ends by printing the `record.ps1` command for it.
 
 `recertify.log` in that folder is the whole run as it was printed, and
-`apply.log` is the rebuild's own output. Put the verdict, the commit it names
-and anything it found in the pull request, and record the run under
-[Certification](#certification).
+`apply.log` is the rebuild's own output. For a branch run made before a merge,
+put the verdict, the commit and the tree in the pull request.
 
 The VM is left running as the rebuild left it, to be looked at. The next run
 restores the checkpoint.
@@ -869,6 +967,86 @@ restart, the run ends as not certified with that message in the log; do the
 rest by hand, below. It does not test an ssh login. And it changes nothing on
 sophon except the folder under `~\cert`.
 
+#### Record a run and move stable
+
+A run gives the VM's result only. To record it, on sophon, elevated, with the
+commit applied there:
+
+```powershell
+chezmoi update                                   # after the merge, for a branch run
+& "$HOME\.local\bin\record.ps1"                  # -DryRun shows the tag and makes nothing
+```
+
+`record.ps1` reads `result.json` from the newest run under `~\cert`, or from
+the run folder given with `-Log`, then stops unless all of these hold:
+
+- this machine is sophon, and the session is elevated,
+- the run was CERTIFIED,
+- the commit to certify is on `main` and has no `certified/` tag yet,
+- `stable` is a commit of `main`,
+- its tree is the tree the VM built,
+- the chezmoi source on sophon is at that commit, with nothing uncommitted and
+  nothing left for `chezmoi apply` to do, both before the checks run and after,
+- the tag and `stable` can be pushed from this session, and
+- every check in `recertify-checks.ps1` passes on sophon, which is the
+  real-hardware half.
+
+It needs no password, so it can be run over ssh. The two checks that are not
+read-only, described below, run on sophon as part of it.
+
+It then shows the tag, creates it on the commit, and pushes the tag and
+`stable` together: both arrive or neither does. The push uses the
+[deploy key](#deploy-key). It certifies the tip of `main` unless `-Commit`
+names another commit. An older commit recorded with `-Commit` gets its tag and
+leaves `stable` where it is. If the trees differ, certify `main` and record
+that run.
+
+Nothing is committed, so no pull request is needed to record a certification.
+What a run found still goes under [Certification](#certification), which is a
+change to this file.
+
+#### The certified run
+
+Each certification is an annotated tag on the commit it certifies, named
+`certified/<date>-<short commit>`. The tag's message holds the result:
+
+```powershell
+chezmoi git -- fetch --tags
+chezmoi git -- tag -l 'certified/*' --sort=-creatordate    # newest first
+chezmoi git -- tag -n99 -l 'certified/*'                   # all of them, with results
+```
+
+```text
+Certified 1a2b3c4 on 2026-11-24
+
+Clean-machine result: 17 of 17 checks passed
+Real-hardware result: 17 of 17 checks passed
+
+Machine:      VM sophon-cert from checkpoint clean-windows, Microsoft Windows 11 Enterprise Evaluation build 26200, user certuser, computer DESKTOP-TVKM720
+Host:         SOPHON, Microsoft Windows 11 Pro build 26300
+Built from:   main
+Tree:         <the tree of the commit>
+```
+
+A tag that exists always means both halves: the rebuild in the VM, and the
+checks on sophon with the same commit applied. `Machine` and `Host` say what
+each half ran on. They are not the same Windows: the VM is an evaluation copy
+of the Enterprise edition, on whatever build its checkpoint has, and sophon is
+Windows 11 Pro.
+
+What changed between two certifications is in the commits between their tags:
+`chezmoi git -- log <older tag>..<newer tag>`. A tag has one more line,
+`Triggered by:`, when `record.ps1` was given `-Reason "<one line>"`. That is
+for a trigger no commit records: a Windows feature update, a new checkpoint,
+or a second run of a commit that has not changed.
+
+The tags are not signed. A ruleset on `certified/*` stops one being deleted or
+moved, so a record cannot change after it is made. To correct a wrong tag,
+turn the ruleset off first, on purpose.
+
+The certifications made before `record.ps1` existed are described under
+[Certification](#certification), and have no tags.
+
 #### By hand
 
 When the script cannot be used, or to look at one step closely. On the host,
@@ -887,9 +1065,12 @@ install chezmoi in an ordinary terminal, then in a new elevated one:
 
 ```powershell
 Start-Transcript -Path "$HOME\bootstrap.log"
-chezmoi init --apply jcouball/windows-dev-config
+chezmoi init --apply --branch main jcouball/windows-dev-config
 Stop-Transcript
 ```
+
+`--branch main`, where the README's rebuild says `stable`: a certification
+builds what is about to be certified.
 
 The transcript is not the whole log. Windows PowerShell does not record what
 chezmoi's scripts write to the console, so `bootstrap.log` holds the start and
@@ -1308,10 +1489,16 @@ two settings are in the chezmoi source's own git config, which a new
 and delete the old one from GitHub. The key is not in 1Password: it is useful
 on sophon alone, and making a new one takes less time than restoring it.
 
-**What the key can do.** Read this repo, and push to it: create, move and
-delete tags, and branches other than `main`. It cannot change `main`, which
-takes changes only through a pull request, and it opens nothing in any other
-repo.
+**What the key can do.** Read this repo, and push to it. What it is for is
+the two things `record.ps1` pushes: a new `certified/` tag, and `stable` moved
+forward. It can also create, move and delete any other tag, and any branch
+other than `main` and `stable`. It cannot change `main`, which takes changes
+only through a pull request. It cannot move or delete a `certified/` tag, or
+delete `stable` or move it backwards: rulesets stop both, for everyone. It
+opens nothing in any other repo.
+
+So a stolen key could move `stable` forward to a commit of its own making, and
+a rebuild would then clone that commit.
 
 ### Set up the deploy key
 
@@ -1396,12 +1583,20 @@ or the key file itself has been somewhere it should not be.
 2. **Look for pushes you did not make.** The repo's
    [Activity](https://github.com/jcouball/windows-dev-config/activity) page
    lists every push, including branches and tags that were created or deleted.
-   `main` cannot have been changed. A tag can have been moved or deleted, so
-   compare the tags with what you expect:
+   `main` cannot have been changed, and no `certified/` tag can have been
+   moved or deleted. `stable` can have been moved forward, and a new tag
+   made. Check that `stable` is a commit of `main` with a `certified/` tag you
+   made:
 
    ```powershell
+   chezmoi git -- fetch origin
+   chezmoi git -- merge-base --is-ancestor origin/stable origin/main; "stable is on main: $($LASTEXITCODE -eq 0)"
+   chezmoi git -- tag --points-at origin/stable
    chezmoi git -- ls-remote --tags origin
    ```
+
+   If `stable` is somewhere it should not be, do not rebuild from it. Putting
+   it back means turning its ruleset off first.
 
 3. **Make a new key**, as in [Replace the deploy key](#replace-the-deploy-key).
 4. **Find out how the key got out.** It was readable by anything that could

@@ -17,9 +17,13 @@ stopped are covered by the owner's own agent instructions, not here.
 
 A docs-only change needs none of them.
 
-`recertify.ps1` certifies `main` unless it is told otherwise. To certify a
-change before it merges, name the branch. The run's log names the commit the
-VM built; put that and the verdict in the pull request:
+A pull request does not need a certification run to merge: "Re-certify the
+rebuild" in the README says what needs one before it reaches `stable`, the
+branch a rebuild clones, and when. `recertify.ps1` certifies `main` unless it
+is told otherwise. To try a change in the VM before it merges, name the
+branch, once, after review. The run's log and its `result.json` name the
+commit and the tree the VM built; put those and the verdict in the pull
+request:
 
 ```powershell
 & "$HOME\.local\bin\recertify.ps1" -Branch <branch>
@@ -225,9 +229,29 @@ function a test can call, and commit tests for it with the change. Code that
 only changes machine state is tested on sophon as above, with the cases and
 results in the pull request.
 
-There are no committed tests yet. The first change this rule applies to sets
-up where they live and how they are run, and describes both here. Later
-changes follow the tests that exist.
+Committed tests are in `tests` at the root of the repository, which
+`.chezmoiignore` keeps off the machine. Each is a plain PowerShell script named
+`<script>.tests.ps1` that prints `ok` or `FAIL` for each case and exits 1 if
+any failed. They use no test framework: the Pester on sophon is 3.4, for
+Windows PowerShell only.
+
+A test builds what the script needs in a temporary folder and points the
+script at it, so it reaches nothing outside that folder. `record.tests.ps1`
+makes a bare repository to stand for GitHub, a clone of it to stand for the
+chezmoi source, a folder of runs, and a stand-in for the checks. `record.ps1`
+takes parameters for those places, and says in its `param` block that they are
+for the tests.
+
+Run a test under both PowerShells, elevated where the script it tests asks for
+that, from a scratch copy of the branch:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File src\tests\record.tests.ps1
+pwsh       -NoProfile -File src\tests\record.tests.ps1
+```
+
+Put the counts in the pull request. A change to a script that has tests adds
+or changes cases with it.
 
 ## Where each script's cases are
 
@@ -244,6 +268,7 @@ gave. Read it before changing the script, and run those cases again.
 | 12 `winget_pin_edge` | #2, #9 |
 | 13 `register_fonts`, 14 `terminal_font` | #15 |
 | `recertify.ps1`, `recertify-step.ps1`, `recertify-checks.ps1` | #25 |
+| `record.ps1` | `tests\record.tests.ps1` |
 | The rebuild as a whole | "Certification" in the README |
 
 ## Departing from this file
