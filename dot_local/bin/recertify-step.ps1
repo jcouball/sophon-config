@@ -30,7 +30,7 @@ param(
     [Parameter(Mandatory)][string]$Dir,
     # Both go on a command line run through cmd.exe, elevated, so only the
     # characters a repository address or a branch can have are let in.
-    [ValidatePattern('^[\w][\w.@:/-]*$')][string]$Repo = 'jcouball/sophon-config',
+    [ValidatePattern('^[\w][\w.@:/-]*$')][string]$Repo = 'jcouball/windows-dev-config',
     # A branch to build from. Left out for the default branch.
     [ValidatePattern('^[\w][\w./-]*$')][string]$Branch
 )

@@ -1,9 +1,10 @@
-# sophon-config
+# windows-dev-config
 
 Configuration for **sophon**, a Windows 11 Pro workstation used mainly for JRuby
 development. Managed with [chezmoi](https://chezmoi.io).
 
-Companion to [jcouball/neuromancer-config](https://github.com/jcouball/neuromancer-config) (macOS).
+Companion to [jcouball/mac-dev-config](https://github.com/jcouball/mac-dev-config) (macOS)
+and [jcouball/ubuntu-dev-config](https://github.com/jcouball/ubuntu-dev-config) (Ubuntu).
 This repo is scoped to one machine deliberately: no OS templating, every file is
 simply the file. The cost is that `.gitconfig`, `.tool-versions` and
 `topgrade.toml` now exist in two repos and will drift; the benefit is that
@@ -59,7 +60,7 @@ winget install twpayne.chezmoi --source winget
 
 # NEW ELEVATED terminal - PATH is stale in the old one, and the manifest
 # contains machine-scope packages that stall silently without elevation
-chezmoi init --apply jcouball/sophon-config
+chezmoi init --apply jcouball/windows-dev-config
 ```
 
 Script 11 can stop the first apply with a warning to restart Windows: the
@@ -259,7 +260,7 @@ package files on its server but promises nothing. Two copies stand behind it:
   (`ucrt64\set-<date>-<id>.list`). Rebuilding a toolchain on this machine
   installs the dated packages from that list without asking any server.
 - A release of this repo,
-  [`ruby-toolchain-sets`](https://github.com/jcouball/sophon-config/releases/tag/ruby-toolchain-sets),
+  [`ruby-toolchain-sets`](https://github.com/jcouball/windows-dev-config/releases/tag/ruby-toolchain-sets),
   keeps each set as one file, `set-<date>-<id>.tar`, holding the list, the
   packages and their MSYS2 signatures. A machine with no cache, which is any
   rebuilt machine, downloads the `.tar` for each toolchain it builds. The
@@ -291,8 +292,8 @@ succeeded, write the copies and add the new ones to the release:
 
 ```powershell
 & "$HOME\.local\bin\ruby-toolchains-archive.ps1" -OutDir "$HOME\toolchain-sets"
-gh release view ruby-toolchain-sets --repo jcouball/sophon-config --json assets --jq '.assets[].name'
-gh release upload ruby-toolchain-sets --repo jcouball/sophon-config "$HOME\toolchain-sets\<new file>"
+gh release view ruby-toolchain-sets --repo jcouball/windows-dev-config --json assets --jq '.assets[].name'
+gh release upload ruby-toolchain-sets --repo jcouball/windows-dev-config "$HOME\toolchain-sets\<new file>"
 ```
 
 The first command writes a `.tar` for every set in the cache and copies the
@@ -397,7 +398,7 @@ mise use node@26.5.0
 mise install
 ```
 
-No `-g`. That file belongs to the *project's* repo, never to sophon-config.
+No `-g`. That file belongs to the *project's* repo, never to windows-dev-config.
 
 #### Retire a runtime
 
@@ -585,8 +586,8 @@ Done once per Mac, mostly on the Mac.
    ```
 
 4. **Give the Mac a host entry.** It belongs in the client's own config repo,
-   not here. On Neuromancer, follow neuromancer-config's
-   [Change a managed config](https://github.com/jcouball/neuromancer-config#change-a-managed-config)
+   not here. On Neuromancer, follow mac-dev-config's
+   [Change a managed config](https://github.com/jcouball/mac-dev-config#change-a-managed-config)
    playbook for `~/.ssh/config`.
 
    First find sophon's address. On sophon, this prints the address of the
@@ -635,7 +636,7 @@ Done once per Mac, mostly on the Mac.
    move them into a `Host *` block at the end of the file. Left in place, a
    global `ForwardAgent yes` and `StrictHostKeyChecking no` would let another
    machine on the LAN pose as sophon without a warning and receive the
-   forwarded agent, with every key in it. neuromancer-config's file is already
+   forwarded agent, with every key in it. mac-dev-config's file is already
    in this order.
 
    Check: this prints sophon's address, `james`, the sophon key,
@@ -647,14 +648,14 @@ Done once per Mac, mostly on the Mac.
    ssh -G sophon | grep -E '^(hostname|user|identityfile|stricthostkeychecking|forwardagent) '
    ```
 
-5. **Add the public key line**, from a clone of the sophon-config repo on the Mac,
+5. **Add the public key line**, from a clone of the windows-dev-config repo on the Mac,
    where the `.pub` file is. The `restrict,pty` prefix is required; the header of
    `administrators_authorized_keys` says what each option does.
 
    Commit only the key file, on a branch, and merge it through a pull request.
 
    ```sh
-   cd ~/github/jcouball/sophon-config
+   cd ~/github/jcouball/dev-config/windows-dev-config
    host=$(scutil --get LocalHostName | tr '[:upper:]' '[:lower:]')
    git switch -c "authorize-$host"
    printf 'restrict,pty %s\n' "$(cat ~/.ssh/id_ed25519_sophon.pub)" >> administrators_authorized_keys
@@ -757,7 +758,7 @@ Commit only the pin, and merge it through a pull request:
 ```powershell
 chezmoi git -- commit .chezmoidata.toml -m "sshd pwsh 7.6.7 -> 7.6.8"
 chezmoi git -- push -u origin HEAD
-gh pr create --repo jcouball/sophon-config --head bump-sshd-pwsh `
+gh pr create --repo jcouball/windows-dev-config --head bump-sshd-pwsh `
   --title "sshd pwsh 7.6.7 -> 7.6.8" --body "Bump the pwsh ZIP that sshd runs."
 ```
 
@@ -881,7 +882,7 @@ install chezmoi in an ordinary terminal, then in a new elevated one:
 
 ```powershell
 Start-Transcript -Path "$HOME\bootstrap.log"
-chezmoi init --apply jcouball/sophon-config
+chezmoi init --apply jcouball/windows-dev-config
 Stop-Transcript
 ```
 
@@ -926,12 +927,14 @@ See [Certification](#certification) for why this exists and what it found.
 pinned, and are never upgraded by a command that also upgrades your browser.
 When adding something new, that question decides which layer owns it.
 
-### Why `sophon-config` and not `dotfiles`
+### Why `windows-dev-config` and not `dotfiles`
 
 "dotfiles" is a Unix idiom. On Windows most of what is managed lives in
 `%APPDATA%` and `%LOCALAPPDATA%` — very little of it is dot-prefixed, so the name
-would misdescribe the contents. `sophon-config` leads with the scope (the
-machine) and stays tool-agnostic, so it survives if chezmoi is ever replaced.
+would misdescribe the contents. `windows-dev-config` names the operating system
+and the role, not a host, to match `mac-dev-config` and `ubuntu-dev-config`. It
+stays tool-agnostic, so it survives if chezmoi is ever replaced. sophon is the
+only machine it configures today.
 
 ---
 
@@ -955,7 +958,7 @@ hook, and therefore per-directory switching, needs pwsh 7.
 ### How the layers call each other
 
 ```text
-        github.com/jcouball/sophon-config
+        github.com/jcouball/windows-dev-config
                        │
                        │  chezmoi update
                        ▼
@@ -1283,8 +1286,8 @@ at the top.
    `gh auth login`. Neither will be on `PATH` in an already-running process —
    restart the terminal, or in VS Code restart the editor, since new terminal
    tabs inherit the editor's stale environment.
-3. **Create the repo.** `gh repo create jcouball/sophon-config --private`
-4. **Initialise.** `chezmoi init jcouball/sophon-config`
+3. **Create the repo.** `gh repo create jcouball/windows-dev-config --private`
+4. **Initialise.** `chezmoi init jcouball/windows-dev-config`
 5. **Set line endings before the first commit.**
    `chezmoi cd`, then
    `Set-Content -Path .gitattributes -Value '* text=auto eol=lf' -Encoding utf8`
@@ -1876,7 +1879,7 @@ before it will unlock. A rebuild using secret templates is three steps:
 ```powershell
 winget install twpayne.chezmoi AgileBits.1Password AgileBits.1Password.CLI --source winget
 op signin
-chezmoi init --apply jcouball/sophon-config
+chezmoi init --apply jcouball/windows-dev-config
 ```
 
 Worth weighing against keeping secret-bearing files out entirely, which keeps the
@@ -1918,7 +1921,7 @@ unreachable objects, so the old commit may remain fetchable by SHA afterwards.
   past a handful of tools, give it its own chezmoi run against a Linux-scoped
   repo.
 - **The client side of SSH.** Private keys and `Host sophon` entries live on
-  each client. The Mac's are in jcouball/neuromancer-config.
+  each client. The Mac's are in jcouball/mac-dev-config.
 - **The network category.** Marking a network Private says it is trusted,
   which is a judgment about that network, and Windows' profile names
   ("Network 3") do not identify the LAN reliably. Script 11 also runs on the

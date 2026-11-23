@@ -26,7 +26,7 @@ VM built; put that and the verdict in the pull request:
 ```
 
 The branch has to be pushed: the VM clones it from GitHub. By hand, the same
-thing is `chezmoi init --apply --branch <branch> jcouball/sophon-config`.
+thing is `chezmoi init --apply --branch <branch> jcouball/windows-dev-config`.
 
 ## Do not
 
