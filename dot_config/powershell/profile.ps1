@@ -1,5 +1,5 @@
 # sophon PowerShell profile
-# Managed by chezmoi (jcouball/sophon-config). This is the real profile; the
+# Managed by chezmoi (jcouball/windows-dev-config). This is the real profile; the
 # files at $PROFILE are one-line stubs that source it. Edit here, not there.
 
 # A winget upgrade of mise can remove mise's directory from the user PATH.

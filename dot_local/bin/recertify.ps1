@@ -54,7 +54,7 @@ param(
     # Both of these end up on a command line that runs elevated in the VM, so
     # only the characters a branch or a repository address can have are let in.
     [ValidatePattern('^[\w][\w./-]*$')][string]$Branch,
-    [ValidatePattern('^[\w][\w.@:/-]*$')][string]$Repo = 'jcouball/sophon-config',
+    [ValidatePattern('^[\w][\w.@:/-]*$')][string]$Repo = 'jcouball/windows-dev-config',
     [string]$VMName = 'sophon-cert',
     [string]$Checkpoint = 'clean-windows',
     [string]$User = 'certuser',

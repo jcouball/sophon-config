@@ -16,7 +16,7 @@
 # $LOCALAPPDATA on purpose: under MSYS that variable holds a "C:\..." path, and
 # prepending it to a colon-separated PATH would reintroduce the same breakage.
 #
-# Managed by chezmoi (jcouball/sophon-config).
+# Managed by chezmoi (jcouball/windows-dev-config).
 
 for _mise_shims in \
   "$HOME/AppData/Local/mise/shims" \

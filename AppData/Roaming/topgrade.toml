@@ -1,5 +1,5 @@
 # sophon (Windows 11). Companion to the macOS config in
-# jcouball/neuromancer-config.
+# jcouball/mac-dev-config.
 #
 # Same principle as the Mac: topgrade manages the system and core tools, never
 # the dependencies of individual software projects. That prevents a global
@@ -15,7 +15,7 @@ only = [
     "system",                 # Windows Update
     "shell",                  # PowerShell modules
     "vscode",                 # editor extensions
-    "chezmoi",                # pull sophon-config and re-apply
+    "chezmoi",                # pull windows-dev-config and re-apply
     "github_cli_extensions",
     "custom_commands",        # [commands] below; topgrade runs them last
 ]
