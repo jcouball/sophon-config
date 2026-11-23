@@ -10,6 +10,10 @@ simply the file. The cost is that `.gitconfig`, `.tool-versions` and
 `topgrade.toml` now exist in two repos and will drift; the benefit is that
 nothing here needs a conditional.
 
+The three are worked on together in
+[jcouball/dev-config](https://github.com/jcouball/dev-config), the workspace
+they are cloned into. Issues that span more than one of them are filed there.
+
 | | |
 | --- | --- |
 | Host | sophon — Windows 11 Pro, build 26200 |
