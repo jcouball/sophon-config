@@ -31,7 +31,7 @@ param(
     # Both go on a command line run through cmd.exe, elevated, so only the
     # characters a repository address or a branch can have are let in.
     [ValidatePattern('^[\w][\w.@:/-]*$')][string]$Repo = 'jcouball/windows-dev-config',
-    # A branch to build from. Left out for the default branch.
+    # A branch to build from. Left out for main.
     [ValidatePattern('^[\w][\w./-]*$')][string]$Branch
 )
 
@@ -74,7 +74,12 @@ try {
 
         'apply' {
             Write-Note "Windows Terminal's settings.json exists before the apply: $(Test-Path $settings)"
-            $from = if ($Branch) { "--branch $Branch $Repo" } else { $Repo }
+            # The branch is always named, main included. The README's command
+            # names stable, the branch that holds what has been certified;
+            # this builds what is about to be. Left to itself chezmoi would
+            # clone the repository's default branch, and the run would depend
+            # on what that happens to be.
+            $from = if ($Branch) { "--branch $Branch $Repo" } else { "--branch main $Repo" }
             Invoke-Logged "chezmoi init --apply $from"
         }
 
@@ -83,6 +88,14 @@ try {
             # Which commit was built. Here and not in the apply step: git is
             # installed by that apply, and is not on its PATH.
             Invoke-Logged 'chezmoi git -- log --oneline -1'
+            # The commit and the tree in full, in a file of their own, for
+            # recertify.ps1 to put in the run's result. record.ps1 compares
+            # the tree with the tree of the commit on main: a branch run
+            # counts for a merged commit only when the two are the same.
+            # Quoted, because to cmd.exe a bare ^ is an escape character.
+            $built = Join-Path $Dir 'built.txt'
+            cmd /d /c "chezmoi git -- rev-parse HEAD `"HEAD^{tree}`" > `"$built`" 2>> `"$log`""
+            Write-Note "built: $(if (Test-Path $built) { (Get-Content $built) -join ' ' } else { 'not recorded' })"
             Write-Note "settings.json exists before Terminal is opened: $(Test-Path $settings)"
             Start-Process wt.exe
             $waited = 0
