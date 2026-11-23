@@ -39,6 +39,7 @@ they are cloned into. Issues that span more than one of them are filed there.
   - [Repository layout](#repository-layout) — every file, and two path traps
   - [Which shell](#which-shell)
   - [Remote access over SSH](#remote-access-over-ssh)
+  - [Deploy key](#deploy-key) — how a push from an ssh session authenticates
   - [Recreating this repo from scratch](#recreating-this-repo-from-scratch) — not the machine
   - [How often to run what](#how-often-to-run-what)
 - **Why it is the way it is**
@@ -1276,6 +1277,138 @@ login without a commit to record it.
 
 ---
 
+## Deploy key
+
+`chezmoi update` fetches this repo over https with no credential, because the
+repo is public. A push needs one, and an ssh session has none: `gh` and Git
+Credential Manager both keep their GitHub login in Credential Manager, which
+stays locked in a session that logged in with a key.
+[Small gotchas](#small-gotchas) has the reason.
+
+So sophon has a deploy key: an ssh key that GitHub accepts for this repo alone,
+with write access. Only a push from the chezmoi source uses it. It is there so
+a certification can be recorded as a tag from an ssh session
+([issue 29](https://github.com/jcouball/windows-dev-config/issues/29)).
+
+| What | Where |
+| --- | --- |
+| Private key, no passphrase | `C:\Users\james\.ssh\id_ed25519_windows_dev_config_deploy` on sophon |
+| Public key | this repo's deploy keys on GitHub, titled `sophon: push certified tags`, with write access |
+| GitHub's host keys | `C:\Users\james\.ssh\known_hosts` on sophon |
+| Push URL and ssh command | the git config of the chezmoi source, `C:\Users\james\.local\share\chezmoi\.git\config` |
+
+The key has no passphrase because the push runs with nobody there to type one,
+and the Windows ssh-agent is locked in an ssh session for the same reason
+Credential Manager is.
+
+**None of this is managed by chezmoi.** The key is a secret made by hand on the
+machine, as [Deliberately not managed](#deliberately-not-managed) says, and the
+two settings are in the chezmoi source's own git config, which a new
+`chezmoi init` does not have. After a rebuild, set it up again with a new key
+and delete the old one from GitHub. The key is not in 1Password: it is useful
+on sophon alone, and making a new one takes less time than restoring it.
+
+**What the key can do.** Read this repo, and push to it: create, move and
+delete tags, and branches other than `main`. It cannot change `main`, which
+takes changes only through a pull request, and it opens nothing in any other
+repo.
+
+### Set up the deploy key
+
+On sophon, in pwsh, make the key. The `'""'` is how pwsh passes an empty
+passphrase:
+
+```powershell
+New-Item -ItemType Directory -Force $env:USERPROFILE\.ssh | Out-Null
+ssh-keygen -t ed25519 -N '""' -C "sophon deploy key for windows-dev-config" `
+  -f $env:USERPROFILE\.ssh\id_ed25519_windows_dev_config_deploy
+```
+
+Register its public half with write access. This needs `gh` logged in, so run
+it in a terminal at sophon's desktop, or copy the `.pub` file to another
+machine and run it there:
+
+```powershell
+gh repo deploy-key add $env:USERPROFILE\.ssh\id_ed25519_windows_dev_config_deploy.pub `
+  -R jcouball/windows-dev-config -w -t "sophon: push certified tags"
+```
+
+Add GitHub's host keys. They come from GitHub's API over https, so they are not
+taken on trust from the first ssh connection. `known_hosts` must not have a
+byte-order mark, which is why this does not use `Out-File`:
+
+```powershell
+$keys = (Invoke-RestMethod https://api.github.com/meta).ssh_keys | ForEach-Object { "github.com $_" }
+[IO.File]::AppendAllText("$env:USERPROFILE\.ssh\known_hosts", (($keys -join "`n") + "`n"))
+```
+
+Point pushes from the chezmoi source at the key. The fetch URL stays https, so
+`chezmoi update` is unchanged:
+
+```powershell
+chezmoi git -- config --local remote.origin.pushurl git@github.com:jcouball/windows-dev-config.git
+chezmoi git -- config --local core.sshCommand 'ssh -i C:/Users/james/.ssh/id_ed25519_windows_dev_config_deploy -o IdentitiesOnly=yes -o BatchMode=yes'
+```
+
+**The `ssh` in that setting must stay a bare `ssh`.** To git that means the
+client Git for Windows ships. With `C:/WINDOWS/System32/OpenSSH/ssh.exe` there,
+a push started from an ssh session hangs and leaves `git.exe` and `ssh.exe`
+running, though the same client authenticates when it is run by itself.
+
+Check it from an ssh session, with nobody logged in at the desktop. This pushes
+nothing:
+
+```powershell
+$env:GIT_TERMINAL_PROMPT = 0
+chezmoi git -- push --dry-run origin HEAD:refs/tags/certified/push-check
+```
+
+It prints ` * [new tag]         HEAD -> certified/push-check`.
+
+### Replace the deploy key
+
+Delete the old key from GitHub, then from sophon:
+
+```powershell
+gh repo deploy-key list -R jcouball/windows-dev-config
+gh repo deploy-key delete <id> -R jcouball/windows-dev-config
+Remove-Item $env:USERPROFILE\.ssh\id_ed25519_windows_dev_config_deploy, $env:USERPROFILE\.ssh\id_ed25519_windows_dev_config_deploy.pub
+```
+
+Then make and register a new one as in
+[Set up the deploy key](#set-up-the-deploy-key). The host keys and the two git
+settings are still in place, so finish with the dry-run push.
+
+### If the deploy key is compromised
+
+Treat the key as compromised if sophon's disk, a backup of the james profile,
+or the key file itself has been somewhere it should not be.
+
+1. **Delete the key from GitHub first.** GitHub refuses it from that moment.
+   This can be done from any machine where `gh` is logged in, or in a browser
+   under the repo's Settings, Deploy keys:
+
+   ```powershell
+   gh repo deploy-key list -R jcouball/windows-dev-config
+   gh repo deploy-key delete <id> -R jcouball/windows-dev-config
+   ```
+
+2. **Look for pushes you did not make.** The repo's
+   [Activity](https://github.com/jcouball/windows-dev-config/activity) page
+   lists every push, including branches and tags that were created or deleted.
+   `main` cannot have been changed. A tag can have been moved or deleted, so
+   compare the tags with what you expect:
+
+   ```powershell
+   chezmoi git -- ls-remote --tags origin
+   ```
+
+3. **Make a new key**, as in [Replace the deploy key](#replace-the-deploy-key).
+4. **Find out how the key got out.** It was readable by anything that could
+   read the james profile on sophon, and so was everything else in it.
+
+---
+
 ## Recreating this repo from scratch
 
 Only needed to recreate this repo from scratch; a rebuild uses the two commands
@@ -1933,6 +2066,7 @@ unreachable objects, so the old commit may remain fetchable by SHA afterwards.
   and the rebuild lists marking the LAN Private as a step by hand.
 - **GitHub credentials for SSH sessions.** If a session needs them, they are a
   by-hand, per-machine secret like any other; see [Small gotchas](#small-gotchas).
+  The one that exists is the [deploy key](#deploy-key).
 - **Brother PowerENGAGE and the Google Gemini PWA.** Accepted exceptions.
 - **Anything you'd reinstall in under a minute.** This repo is for what is
   painful to reconstruct, not an inventory.
@@ -1987,7 +2121,8 @@ unreachable objects, so the old commit may remain fetchable by SHA afterwards.
   `ssh sophon 'gh auth status'`. Public repos clone without credentials; for
   private ones, the simplest route is to send the code from the client. Storing a
   token in plain text on sophon is the other route, and it is a by-hand
-  secret, never this repo.
+  secret, never this repo. A push from the chezmoi source does neither: it
+  uses the [deploy key](#deploy-key).
 - **An SSH session runs without mise if the profile stub cannot be read.** The
   stub lives in the OneDrive-redirected Documents folder. If OneDrive has made
   it online-only and is not running, the session starts with no activation and
