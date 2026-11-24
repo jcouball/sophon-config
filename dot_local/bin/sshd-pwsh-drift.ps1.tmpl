@@ -7,8 +7,9 @@
 # build picks up, and nothing says so.
 #
 # topgrade runs this weekly, as a custom command after its chezmoi step (see
-# topgrade.toml), so drift shows up within a week. It is not a chezmoi script:
-# a `run_` script is always pending, so `chezmoi status` would never be empty.
+# topgrade.toml), so drift shows up within a week. It is not a chezmoi script
+# that runs on every apply: a weekly warning is often enough, and an apply
+# should not start a second pwsh each time.
 # It only warns. Drift is not a broken machine. It warns only when the ZIP is
 # older: the ZIP can be ahead when it was bumped for a fix the Store has not
 # shipped yet.

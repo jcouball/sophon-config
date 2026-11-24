@@ -269,6 +269,7 @@ gave. Read it before changing the script, and run those cases again.
 | 13 `register_fonts`, 14 `terminal_font` | #15 |
 | `recertify.ps1`, `recertify-step.ps1`, `recertify-checks.ps1` | #25 |
 | `record.ps1` | `tests\record.tests.ps1` |
+| 15 `git_hooks_path`, `.githooks`, the hook checks | #36 |
 | The rebuild as a whole | "Certification" in the README |
 
 ## Departing from this file

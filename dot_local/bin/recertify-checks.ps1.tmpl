@@ -119,9 +119,37 @@ Test-Outcome 'sshd accepts keys only' 'passwordauthentication no; authentication
 
 # --- chezmoi ----------------------------------------------------------------
 
+# Always-run scripts are left out: script 15 is pending after every apply. The
+# flag is passed here, although .chezmoi.toml.tmpl sets the same thing, so the
+# check does not depend on the machine's config having been regenerated.
 Test-Outcome 'chezmoi has nothing left to do' 'no output' {
-    chezmoi status
+    chezmoi status --exclude=always
 } { param($found) -not $found }
+
+# --- git hooks (script 15) ---------------------------------------------------
+
+$chezmoiSource = "$(chezmoi source-path)".Trim()
+
+# --local, because a core.hooksPath in ~/.gitconfig would say nothing about
+# this clone.
+Test-Outcome 'the chezmoi source runs the hooks in .githooks' '.githooks' {
+    git -C $chezmoiSource config --local --get core.hooksPath
+} { param($found) $found -eq '.githooks' }
+
+Test-Outcome 'both hooks are there' 'no hook missing' {
+    'pre-commit', 'pre-push' |
+        Where-Object { -not (Test-Path -LiteralPath (Join-Path $chezmoiSource ".githooks\$_")) } |
+        ForEach-Object { "missing: .githooks\$_" }
+} { param($found) -not $found }
+
+# git runs a hook with its own sh, not with PowerShell. So the hook is run
+# there, not only looked at: given a push that deletes stable, it has to
+# refuse. Nothing is pushed. sh is Git's, on the user PATH since script 08.
+Test-Outcome "the pre-push hook runs under Git's sh" '"Not deleting stable", exit 1' {
+    $zero = '0' * 40
+    "(delete) $zero refs/heads/stable $zero" | sh (Join-Path $chezmoiSource '.githooks\pre-push').Replace('\', '/')
+    "exit $LASTEXITCODE"
+} { param($found) $found -match 'Not deleting stable' -and $found -match '(?m)^exit 1$' }
 
 # --- Ruby toolchains (script 06) -------------------------------------------
 

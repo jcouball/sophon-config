@@ -1,0 +1,53 @@
+# Make git run the hooks in .githooks for the chezmoi source.
+#
+# The two hooks stop a commit on main or stable, and a push to stable of a
+# commit that was not certified. git does not run a versioned hook by itself:
+# a clone runs them only when its own core.hooksPath names the directory. A
+# hook that is not installed protects nothing, and the chezmoi source is the
+# clone record.ps1 pushes from, and the one that has stable checked out after
+# a rebuild.
+#
+# run_ RATHER THAN run_once_ OR run_onchange_, so it runs on every apply. It
+# is the one script here that does. chezmoi remembers a once or onchange
+# script as done in its own state, not in the clone, so a source that was
+# cloned again would have no hooks and nothing would set them. This script
+# reads one git setting and prints nothing when it is already right.
+#
+# A script that runs on every apply is always pending, so `chezmoi status`
+# would never be empty. .chezmoi.toml.tmpl leaves such scripts out of the
+# status for that reason.
+#
+# On a rebuild git arrives in this same apply, from the winget manifest, and
+# chezmoi's own PATH is from before it. So PATH is read again from the
+# registry, as script 08 does, with Git's default folder as the fallback.
+
+$source = {{ .chezmoi.workingTree | squote }}
+
+if (-not (Test-Path -LiteralPath (Join-Path $source '.githooks'))) {
+    Write-Warning "$source\.githooks not found - git hooks not set up."
+    exit 1
+}
+
+$env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
+            [Environment]::GetEnvironmentVariable('Path', 'User')
+
+$git = Get-Command git.exe -ErrorAction SilentlyContinue
+$gitExe = if ($git) { $git.Source } else { 'C:\Program Files\Git\cmd\git.exe' }
+if (-not (Test-Path -LiteralPath $gitExe)) {
+    Write-Warning ("git not found on PATH or at $gitExe - is Git.Git installed? " +
+                   'core.hooksPath not set; the next apply tries again.')
+    exit 1
+}
+
+# Exit 1 with no output means the setting is not there, which is the case on a
+# new clone and not an error.
+$current = & $gitExe -C $source config --local --get core.hooksPath 2>$null
+if ("$current".Trim() -eq '.githooks') { exit 0 }
+
+Write-Host "Setting core.hooksPath to .githooks in $source"
+& $gitExe -C $source config --local core.hooksPath .githooks
+if ($LASTEXITCODE -ne 0) {
+    Write-Warning "git config failed (exit $LASTEXITCODE) - core.hooksPath not set."
+    exit 1
+}
+exit 0

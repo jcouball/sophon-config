@@ -843,6 +843,43 @@ push as the tag.
 mac-dev-config has two machines and so two roles, one following `stable`. Its
 README describes them.
 
+#### The hooks
+
+That leaves one accident GitHub accepts: a commit made in a source that has
+`stable` checked out, as a sophon that has just been rebuilt does, and then
+pushed. Two git hooks in `.githooks/` stop it in the clone. They are the same
+two as in mac-dev-config, in POSIX `sh`: Git for Windows runs a hook with its
+own `sh.exe`, whatever shell started git.
+
+| Hook | Stops | Lets through |
+| --- | --- | --- |
+| `pre-commit` | a commit while `main` or `stable` is checked out | any other branch, and a detached `HEAD`, which is what a rebase commits with |
+| `pre-push` | a push to `stable`, from any local branch, of a commit with no `certified/` tag | a commit that has the tag in this clone or gets it in the same push, which is what `record.ps1` pushes |
+
+git runs a versioned hook only in a clone whose `core.hooksPath` names the
+directory. Script 15 sets that in the chezmoi source on every apply, and the
+checks cover it, by running the `pre-push` hook as well as reading the
+setting. In any other clone:
+
+```powershell
+git config core.hooksPath .githooks
+```
+
+Script 15 is the one script that runs on every apply, so chezmoi always lists
+it as still to run. `.chezmoi.toml.tmpl` leaves such scripts out of
+`chezmoi status`, and the checks and `record.ps1` pass `--exclude=always`
+themselves, so neither depends on that setting. A machine whose chezmoi config
+was written before the setting existed shows ` R .chezmoiscripts/15_git_hooks_path.ps1`
+in a bare `chezmoi status` until the config is written again, which asks
+nothing:
+
+```powershell
+chezmoi init
+```
+
+The hooks are a guard against accidents, not a control. Each lives in one
+clone, and `--no-verify` skips it. The rulesets are the control.
+
 ### Re-certify the rebuild
 
 A pull request does not need a certification run to merge. It needs review, and
@@ -1187,6 +1224,8 @@ TESTING.md                            how a change is tested before it merges (i
 .chezmoidata.toml                     pins: sshd's pwsh, the Ruby toolchains' dates, the fonts
 .chezmoiexternal.toml.tmpl            sshd's pwsh, a pinned ZIP, one folder per version; the font files
 .gitattributes                        * text=auto eol=lf
+.githooks/pre-commit                  stops a commit on main or stable
+.githooks/pre-push                    stops a push to stable of a commit that was not certified
 winget-packages.json                  35 packages; read by script 01, never deployed
 administrators_authorized_keys        public keys for SSH; read by script 11, never deployed
 sshd_config                           sshd's config; copied to C:\ProgramData\ssh by script 11
@@ -1220,6 +1259,7 @@ dot_local/bin/recertify-checks.ps1.tmpl     the checks a rebuilt machine has to 
   run_once_after_12_winget_pin_edge.ps1            keep winget upgrade --all off Edge
   run_onchange_after_13_register_fonts.ps1.tmpl    register the downloaded fonts for this user
   run_onchange_after_14_terminal_font.ps1.tmpl     set Terminal's font to MesloLGS NF
+  run_after_15_git_hooks_path.ps1.tmpl             point the source's git at .githooks, on every apply
 ```
 
 Two scripts share the number `02` because they are one job: making PowerShell
@@ -1440,8 +1480,11 @@ starts, and deletes old folders no session is using.
 The cost is a second copy that only updates when the pin changes. topgrade
 runs `~/.local/bin/sshd-pwsh-drift.ps1` weekly, after its chezmoi step, so
 drift surfaces within a week as a warning that prints the bump. It is a
-topgrade command, not a chezmoi script, because a script that runs on every
-apply is always pending, and `chezmoi status` would never come back empty.
+topgrade command, not a chezmoi script that runs on every apply: a weekly
+warning is often enough, and an apply should not start a second pwsh each
+time. Script 15 is the one script that does run on every apply, and
+`.chezmoi.toml.tmpl` leaves such scripts out of `chezmoi status`, which would
+otherwise never come back empty.
 Following the MSIX version automatically was rejected. It needs the MSIX
 version when chezmoi renders its templates, which on a rebuild is before
 script 01 has installed MSIX. It also changes the binary behind every admin

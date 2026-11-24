@@ -309,7 +309,12 @@ function Test-Source {
         Stop-Record "The chezmoi source at $($script:source) has uncommitted changes:$When`n$changes`n   What is applied on sophon is then not what is at $short."
     }
     if (-not $SourceDir) {
-        $pending = "$(chezmoi status)".Trim()
+        # Always-run scripts are left out: script 15 runs on every apply, so
+        # chezmoi lists it as pending however often it has run. The flag is
+        # passed here, although .chezmoi.toml.tmpl sets the same thing, so
+        # this does not depend on the machine's config having been
+        # regenerated with `chezmoi init`.
+        $pending = "$(chezmoi status --exclude=always)".Trim()
         # The exit code first. A chezmoi status that failed prints nothing to
         # read here, and nothing is also what it prints when all is applied.
         if ($LASTEXITCODE -ne 0) {
