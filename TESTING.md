@@ -268,6 +268,7 @@ gave. Read it before changing the script, and run those cases again.
 | 12 `winget_pin_edge` | #2, #9 |
 | 13 `register_fonts`, 14 `terminal_font` | #15 |
 | `recertify.ps1`, `recertify-step.ps1`, `recertify-checks.ps1` | #25 |
+| `recertify-checkpoint.ps1`, `recertify-vm.ps1`, the licence line in `recertify.ps1` | #38 |
 | `record.ps1` | `tests\record.tests.ps1` |
 | 15 `git_hooks_path`, `.githooks`, the hook checks | #36 |
 | 16 `tailscale`, the Tailscale checks | #37 |

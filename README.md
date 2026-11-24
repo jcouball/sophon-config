@@ -901,7 +901,8 @@ run passed a test that no longer exists.
 
 **What does not:** the README, `TESTING.md`, `CLAUDE.md` and the files under
 `tests`. A commit that changes only those can sit on `main` until the next run
-takes it along. `recertify.ps1`, `recertify-step.ps1` and `record.ps1` are
+takes it along. `recertify.ps1`, `recertify-step.ps1`, `recertify-checkpoint.ps1`,
+`recertify-vm.ps1` and `record.ps1` are
 files chezmoi writes, so a change to one is in the tree a run builds; each is
 tested by the next run it makes, and by its own tests where it has them.
 
@@ -1243,6 +1244,8 @@ dot_local/bin/ruby-toolchains-packages.sh   its helper: install MSYS2 packages a
 dot_local/bin/ruby-toolchains-archive.ps1   write each cached package set as a .tar, for the release
 dot_local/bin/recertify.ps1                 rebuild the certification VM and check it, in one command
 dot_local/bin/recertify-step.ps1            its helper: one step of the rebuild, run inside the VM
+dot_local/bin/recertify-checkpoint.ps1      make a new clean checkpoint of the VM, with -Rearm to extend its licence
+dot_local/bin/recertify-vm.ps1              what those two share: the password, the lock, the waits, the licence
 dot_local/bin/recertify-checks.ps1.tmpl     the checks a rebuilt machine has to pass
 
 .chezmoiscripts/
@@ -2160,13 +2163,13 @@ while logged in.
 
 The image is Enterprise Evaluation, which runs for 90 days from install and
 then warns, and later shuts the VM down every hour. A restore does not reset
-that clock, since it restores the install date with everything else. When
-the warning appears, `slmgr /rearm` from an elevated terminal inside the VM
-starts another 90 days (Enterprise Evaluation allows this a few times);
-restart, then take a fresh `clean-windows` checkpoint so later restores
-inherit the extension. The same refresh, restore, let Windows Update finish,
-restart, re-checkpoint, is worth doing before any certification run months
-after the last one, so updates do not reboot the VM mid-apply.
+that clock, since it restores the install date with everything else.
+`slmgr /rearm` inside the VM starts another 90 days, a limited number of
+times, and it lasts only if a new `clean-windows` checkpoint captures it.
+`recertify-checkpoint.ps1 -Rearm` does both:
+[Making a new checkpoint](#making-a-new-checkpoint), below. Every
+`recertify.ps1` run prints the days and the rearms left, and warns under 30
+days.
 
 The licence state of the `clean-windows` checkpoint, read on 2026-11-22 with
 `slmgr /dlv` and `slmgr /xpr` after a restore:
@@ -2180,7 +2183,8 @@ The licence state of the `clean-windows` checkpoint, read on 2026-11-22 with
 A rearm starts 90 days from the day it runs, so an early one throws the
 remaining days away. With 30 days left as the earliest point worth doing it,
 that is 2026-12-21. Update this table whenever a rearm is captured in a new
-checkpoint.
+checkpoint: `recertify-checkpoint.ps1 -Rearm` ends by printing the new
+numbers.
 
 The two rearms are all this VM has. Each done just before expiry, they carry
 it to about 2027-04-20 and then about 2027-07-19. After that nothing extends
@@ -2208,9 +2212,9 @@ Set-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' -N
 ```
 
 The Windows Update service is left alone, because script 11 installs the
-OpenSSH server through it; with the policy set, that install still works. Set
-the policy again whenever a new `clean-windows` checkpoint is made, before
-taking it. `recertify.ps1` warns when the VM it restored does not have it. This
+OpenSSH server through it; with the policy set, that install still works.
+`recertify-checkpoint.ps1` sets the policy again in every checkpoint it makes,
+and `recertify.ps1` warns when the VM it restored does not have it. This
 makes the VM unlike a new machine in one respect, on purpose: a new machine can
 hit the same failure, and [Rebuild from nothing](#rebuild-from-nothing) says
 what to do then.
@@ -2220,6 +2224,86 @@ The current `clean-windows` was taken on 2026-11-20 from the checkpoint of
 but that policy. It still carries October's Windows, and a restart that was
 pending when the first checkpoint was taken; rebuilds have always passed with
 that.
+
+#### Making a new checkpoint
+
+One command on sophon, elevated, makes a new `clean-windows` from the current
+one and keeps the old one under a dated name. Not while a certification is
+running: the two share the VM, and each refuses to start beside the other.
+
+```powershell
+& "$HOME\.local\bin\recertify-checkpoint.ps1"           # a new clean-windows from the current one
+& "$HOME\.local\bin\recertify-checkpoint.ps1" -Rearm    # the same, with the licence extended first
+```
+
+It restores the source checkpoint, sets the update policy, checks the state,
+waits for Windows' servicing to go quiet, and takes the checkpoint. It takes
+six or seven minutes, with or without `-Rearm`, about half of it the wait. It
+takes no checkpoint unless all of this holds:
+
+- `certuser` is signed in,
+- chezmoi is not installed and its source folder does not exist,
+- the OpenSSH server capability is not present,
+- the update policy reads back as set,
+- automatic sign-in is off and no password is stored for it, and
+- no `TiWorker` process has run for a full minute, within 20 minutes. A
+  checkpoint taken while servicing is busy resumes in the middle of that work
+  on every restore.
+
+Those checks do not prove the VM is clean. They look for three things out of
+everything a rebuild installs. The new checkpoint is clean because its source
+was, which is why the script names the source and when it was made.
+
+The new checkpoint is taken under a temporary name. Only then is the old
+`clean-windows` renamed to `clean-windows-<the date it was made>`, with the
+time added if that name is taken, and the new one given its name. If taking
+the checkpoint fails, `clean-windows` is still the old one and `recertify.ps1`
+still works.
+
+**It never deletes a checkpoint.** Each one kept holds a memory image of the
+VM and a differencing disk. The script ends by listing the checkpoints, each
+one's parent, and the size of the VM's folder. Removing old ones is a decision
+for a person: `Remove-VMCheckpoint -VMName sophon-cert -Name <name>`.
+
+**`-Rearm` extends the licence first.** A rearm needs a restart, and a restart
+ends the signed-in session the checkpoint depends on. Automatic sign-in is the
+only way back to a signed-in desktop without a person, so the script turns it
+on for the one restart and off again. While it runs, the VM:
+
+1. has its licence read. The script stops if no rearm is left, and if more
+   than 30 days remain unless `-Force` is given;
+2. gets automatic sign-in for `certuser`, with the password in the registry;
+3. runs `slmgr /rearm`;
+4. is shut down and started, and signs `certuser` in by itself;
+5. has its licence read again. The script stops unless the days went up and
+   the rearms went down by one;
+6. has automatic sign-in turned off and the stored password removed.
+
+The checks above then confirm that automatic sign-in is off. It is turned off
+so that the checkpoint matches a new machine, which has none, not to keep the
+password secret: the password opens nothing but this VM and is in a plain file
+on sophon already. A checkpoint captures memory, so removing the registry
+value does not prove the password is absent from the checkpoint. That is
+accepted.
+
+The restart changes more than the licence: it finishes whatever restart was
+pending in the source. The script prints whether one was pending before and
+after.
+
+To try a new checkpoint before it replaces the real one, give it another
+name, and certify from that:
+
+```powershell
+& "$HOME\.local\bin\recertify-checkpoint.ps1" -NewName clean-windows-test
+& "$HOME\.local\bin\recertify.ps1" -Checkpoint clean-windows-test
+```
+
+A tag records which checkpoint the VM was restored from, so a run from a test
+checkpoint says so.
+
+When there is no VM, or no clean checkpoint at all, none of this applies: the
+VM has to be made again from the evaluation ISO, as the paragraphs above
+describe.
 
 ### The second certification: shared Ruby toolchains (November 2026)
 
