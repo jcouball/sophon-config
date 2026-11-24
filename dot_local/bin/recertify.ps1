@@ -11,6 +11,8 @@
 # WHAT IT DOES
 #
 #   1. Restores the VM's clean checkpoint and waits for the VM to answer.
+#      Prints how long the VM's evaluation licence has left, and warns when
+#      it is under 30 days.
 #   2. Runs "Rebuild from nothing" from the README inside the VM, each part
 #      in a new process, as a person would in a new terminal:
 #        install-chezmoi   winget install twpayne.chezmoi --source winget
@@ -48,11 +50,11 @@
 # answered for it. A rebuild that needs an answer has failed.
 #
 # THE PASSWORD. PowerShell Direct needs the guest account's password. It is
-# taken from -Credential, or from the first line of
-# ~\.config\recertify\password.txt if that file exists, or asked for. The file
-# is for running this over ssh, where nobody can be asked; it is a plain file,
-# so use it only for a password that opens nothing but the VM. The password is
-# never written to a log.
+# taken from -Credential, or as recertify-vm.ps1 says: from a file, or asked
+# for. The password is never written to a log.
+#
+# recertify-vm.ps1, in this folder, holds what this script shares with
+# recertify-checkpoint.ps1, which makes the checkpoint this one restores.
 #
 # It runs under Windows PowerShell 5.1 and pwsh 7.
 
@@ -79,43 +81,20 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$elevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
-    [Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $elevated) {
-    # Unelevated, the Hyper-V cmdlets return empty lists, not an error.
+. (Join-Path $PSScriptRoot 'recertify-vm.ps1')
+
+if (-not (Test-RecertifyElevated)) {
     Write-Warning 'Run this elevated: without that, Hyper-V shows no virtual machines.'
     exit 1
 }
 
-if (-not $Credential) {
-    $passwordFile = Join-Path $HOME '.config\recertify\password.txt'
-    if (Test-Path $passwordFile) {
-        $secure = ConvertTo-SecureString (@(Get-Content $passwordFile)[0]) -AsPlainText -Force
-        $Credential = New-Object pscredential ($User, $secure)
-    } else {
-        Write-Host "No password file at $passwordFile, so asking for the password of $User."
-        Write-Host 'To run without being asked, put the password on the first line of that file.'
-        Write-Host 'Nothing typed here is saved.'
-        $Credential = Get-Credential -UserName $User -Message "The password of $User in the VM $VMName"
-    }
-}
+if (-not $Credential) { $Credential = Get-RecertifyCredential -User $User -VMName $VMName }
 
 # One run at a time for a VM. A second one would restore the checkpoint under
-# the first, and both would report on a machine neither of them built. The
-# lock is system-wide, so it holds between a run at the desktop and one over
-# ssh, and Windows lets go of it when this process ends, however it ends.
-$lock = New-Object Threading.Mutex ($false, ('Global\recertify-' + ($VMName -replace '[^\w.-]', '-')))
-try {
-    $haveLock = $lock.WaitOne(0)
-} catch {
-    # The run that held it was killed without letting go. Windows reports
-    # that as an error and gives the lock to whoever asked, which is this
-    # run. PowerShell wraps the error, so look inside it.
-    if ($_.Exception.GetBaseException() -isnot [Threading.AbandonedMutexException]) { throw }
-    $haveLock = $true
-}
-if (-not $haveLock) {
-    Write-Warning "Another re-certification of $VMName is running. Wait for it to finish: its log is the newest folder under $OutRoot."
+# the first, and both would report on a machine neither of them built.
+$lock = Enter-RecertifyLock -VMName $VMName
+if (-not $lock) {
+    Write-Warning "Another re-certification of $VMName is running, or its checkpoint is being made. Wait for it to finish: a certification's log is the newest folder under $OutRoot."
     exit 1
 }
 
@@ -156,36 +135,22 @@ if ((Get-VM -Name $VMName).State -ne 'Running') {
 }
 
 Write-Line 'Waiting for the VM to answer'
-$answered = $false
-$problem = ''
-foreach ($try in 1..60) {
-    try {
-        [void](Invoke-InVM { $env:COMPUTERNAME })
-        $answered = $true
-        break
-    } catch {
-        $problem = $_.Exception.Message
-        if ($problem -match 'credential|password|user name') {
-            Write-Line "The VM refused the sign-in: $problem"
-            exit 1
-        }
-        Start-Sleep 5
-    }
+$problem = Wait-RecertifyVM -VMName $VMName -Credential $Credential
+if ($problem -like 'refused:*') {
+    Write-Line "The VM refused the sign-in: $($problem -replace '^refused: ', '')"
+    exit 1
 }
-if (-not $answered) {
-    Write-Line "The VM did not answer within 5 minutes: $problem"
+if ($problem) {
+    Write-Line "The VM did not answer: $problem"
     exit 1
 }
 
-# The steps run in the desktop session, so somebody has to be signed in.
-$signedIn = $false
-foreach ($try in 1..60) {
-    if (Invoke-InVM { [bool](Get-Process explorer -ErrorAction SilentlyContinue) }) { $signedIn = $true; break }
-    if ($try -eq 1) { Write-Line "Nobody is signed in at the VM's desktop. Waiting up to 10 minutes: sign in as $User with vmconnect." }
-    Start-Sleep 10
+# The steps run in $User's desktop session, so $User has to be signed in.
+$signedIn = Wait-RecertifySignIn -VMName $VMName -Credential $Credential -User $User -OnWait {
+    Write-Line "$User is not signed in at the VM's desktop. Waiting up to 10 minutes: sign in as $User with vmconnect."
 }
 if (-not $signedIn) {
-    Write-Line "Still nobody signed in. The checkpoint has to be taken while signed in; see 'The certification VM' in the README."
+    Write-Line "$User is still not signed in. The checkpoint has to be taken while signed in; see 'The certification VM' in the README."
     exit 1
 }
 
@@ -248,6 +213,37 @@ if ($before.Waiting) {
 # Reported, not acted on: the checkpoint has carried a pending restart since
 # it was made, and rebuilds have passed with it.
 Write-Line "Restart pending in the VM before the rebuild: $($before.RestartPending)"
+
+# The evaluation licence. A restore puts the licence back to what the
+# checkpoint holds, so this is the checkpoint's licence, less the days since
+# it was made. Once it runs out the VM shuts down every hour, which is about
+# as long as a run takes. Reported, and warned about in time to act: this
+# script never rearms and never replaces the checkpoint, because the
+# checkpoint is what every certification is measured against.
+$licence = $null
+$licenceRead = $true
+try {
+    $licence = Get-RecertifyLicence -VMName $VMName -Credential $Credential
+} catch {
+    $licenceRead = $false
+    Write-Line "Could not read the VM's licence: $($_.Exception.Message)"
+}
+if ($licence) {
+    Write-Line "The VM's evaluation licence: $($licence.Days) day(s) left, $($licence.Rearms) rearm(s) left"
+    if (-not $licence.Licensed) {
+        Write-Line 'WARNING: the licence is not in force. An expired evaluation shuts the VM down every hour.'
+    }
+    if ($licence.Days -lt 30) {
+        if ($licence.Rearms -gt 0) {
+            Write-Line 'WARNING: under 30 days. Extend it, in a new checkpoint, when no certification is running:'
+            Write-Line '           & "$HOME\.local\bin\recertify-checkpoint.ps1" -Rearm'
+        } else {
+            Write-Line "WARNING: under 30 days and no rearm is left. The VM has to be rebuilt from the ISO: see 'The certification VM' in the README."
+        }
+    }
+} elseif ($licenceRead) {
+    Write-Line 'The VM reports no Windows licence to read.'
+}
 
 $session = New-PSSession -VMName $VMName -Credential $Credential
 try {
