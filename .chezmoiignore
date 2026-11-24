@@ -1,5 +1,6 @@
 # Source-only files. Anything in the source root that does not begin with a dot
-# otherwise becomes a target and gets written to the home directory.
+# otherwise becomes a target and gets written to the home directory. .githooks
+# begins with one, so chezmoi leaves it alone.
 #
 # winget-packages.json is read by run_onchange_01 via `include`, and
 # administrators_authorized_keys and sshd_config by run_onchange_after_11;

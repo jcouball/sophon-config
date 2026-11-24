@@ -1,0 +1,74 @@
+#!/bin/sh
+#
+# Stop a push to stable of a commit that was not certified.
+#
+# stable holds the last certified commit, and record.ps1 is what
+# moves it: to a commit it has just tagged certified/<date>-<commit>, in the
+# same push as the tag. GitHub's ruleset stops stable being deleted or moved
+# backwards, but it cannot tell a certified commit from any other. So a commit
+# made by accident in a clone that has stable checked out, and then pushed,
+# would be what the next rebuild clones.
+#
+# A push to stable is let through when the commit has a certified/ tag: in
+# this clone, or as a ref of the same push. The second is for record.ps1's
+# check that it can push, a dry run made before the tag exists.
+#
+# git gives the refs being pushed on standard input, one per line:
+#
+#   <local ref> <local object> <remote ref> <remote object>
+#
+# The remote ref is what is read, so the push is caught whatever the local
+# branch is called: `git push origin HEAD:stable` included.
+#
+# This is a guard against accidents, not a control. It runs only in a clone
+# whose core.hooksPath is .githooks, and `git push --no-verify` skips it.
+
+refs="$(cat)"
+
+# The commit of each certified/ tag in this push, one per line. A tag pushed
+# by name gives the tag object, and ^{commit} reads through it.
+pushed_certified=""
+while read -r _ local_object remote_ref _; do
+  case "$remote_ref" in
+    refs/tags/certified/*)
+      commit="$(git rev-parse --verify --quiet "$local_object^{commit}")" || continue
+      pushed_certified="$pushed_certified$commit
+"
+      ;;
+  esac
+done <<EOF_REFS
+$refs
+EOF_REFS
+
+status=0
+while read -r _ local_object remote_ref _; do
+  [ "$remote_ref" = "refs/heads/stable" ] || continue
+
+  # An object name of all zeros means the push deletes the ref.
+  case "$local_object" in
+    *[!0]*) ;;
+    *)
+      echo "❌ Not deleting stable." >&2
+      status=1
+      continue
+      ;;
+  esac
+
+  commit="$(git rev-parse --verify --quiet "$local_object^{commit}")" || commit=""
+
+  if [ -n "$commit" ]; then
+    printf '%s' "$pushed_certified" | grep -qxF "$commit" && continue
+    [ -z "$(git tag --points-at "$commit" --list 'certified/*')" ] || continue
+  fi
+
+  short="$(git rev-parse --short "$local_object" 2>/dev/null)" || short="$local_object"
+  echo "❌ Not pushing $short to stable: it has no certified/ tag." >&2
+  echo "   stable is moved by record.ps1, to a commit it has certified." >&2
+  echo "   A change goes to main through a pull request:" >&2
+  echo "     git switch -c <type>/<short-description> && git push -u origin HEAD" >&2
+  status=1
+done <<EOF_REFS
+$refs
+EOF_REFS
+
+exit "$status"

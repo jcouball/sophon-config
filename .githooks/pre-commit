@@ -1,0 +1,29 @@
+#!/bin/sh
+#
+# Stop a commit made while main or stable is checked out.
+#
+# main takes changes only through a pull request, and stable is moved only by
+# record.ps1. A commit on either is an accident, and GitHub catches only one
+# of them: a ruleset rejects a push to main, but a push to stable is accepted,
+# because record.ps1 pushes to it directly. A sophon that has just been
+# rebuilt has stable checked out in its chezmoi source, which is where that
+# accident is easiest to make.
+#
+# A detached HEAD is let through: a rebase commits with HEAD detached.
+#
+# This is a guard against accidents, not a control. It runs only in a clone
+# whose core.hooksPath is .githooks, and `git commit --no-verify` skips it.
+
+branch="$(git symbolic-ref --quiet --short HEAD)" || exit 0
+
+case "$branch" in
+  main|stable)
+    echo "❌ Not committing on $branch." >&2
+    echo "   Make a branch first, then commit again:" >&2
+    echo "     git switch -c <type>/<short-description>" >&2
+    echo "   The changes are still staged." >&2
+    exit 1
+    ;;
+esac
+
+exit 0
