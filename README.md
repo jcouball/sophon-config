@@ -23,7 +23,7 @@ they are cloned into. Issues that span more than one of them are filed there.
 | Package manager | winget 1.29 |
 | Runtimes | mise, 8 tools |
 | WSL | 2.5.10 (Ubuntu 24.04.3, deliberately bare) |
-| Remote access | OpenSSH server, keys only, LAN only |
+| Remote access | OpenSSH server, keys only, from the LAN and the tailnet |
 | Rebuild | **certified** on a clean VM |
 
 ---
@@ -107,6 +107,8 @@ Afterwards, by hand:
   that setting on the device and does not sync it, so a rebuilt machine starts
   with Warp's default font.
 - Sign in to Telegram: scan its QR code from the phone app.
+- Sign in to Tailscale, so sophon can be reached from outside the LAN: see
+  [Tailscale](#tailscale).
 - Mark the LAN Private, or the firewall blocks SSH. Script 11 warns when no
   network is. In an elevated terminal, with the LAN adapter's name (`Ethernet`
   on sophon):
@@ -1226,7 +1228,7 @@ TESTING.md                            how a change is tested before it merges (i
 .gitattributes                        * text=auto eol=lf
 .githooks/pre-commit                  stops a commit on main or stable
 .githooks/pre-push                    stops a push to stable of a commit that was not certified
-winget-packages.json                  35 packages; read by script 01, never deployed
+winget-packages.json                  36 packages; read by script 01, never deployed
 administrators_authorized_keys        public keys for SSH; read by script 11, never deployed
 sshd_config                           sshd's config; copied to C:\ProgramData\ssh by script 11
 
@@ -1255,11 +1257,12 @@ dot_local/bin/recertify-checks.ps1.tmpl     the checks a rebuilt machine has to 
   run_once_after_08_git_unix_tools_path.ps1        Git's usr\bin on user PATH, for spawned Unix tools
   run_once_after_09_remove_stale_mise_version_pins.ps1   delete persisted MISE_*_VERSION env vars
   run_once_after_10_disable_warp_autostart.ps1     veto Warp's run-at-sign-in registration
-  run_onchange_after_11_openssh_server.ps1.tmpl    SSH server: keys only, LAN only, ZIP pwsh
+  run_onchange_after_11_openssh_server.ps1.tmpl    SSH server: keys only, LAN and tailnet only, ZIP pwsh
   run_once_after_12_winget_pin_edge.ps1            keep winget upgrade --all off Edge
   run_onchange_after_13_register_fonts.ps1.tmpl    register the downloaded fonts for this user
   run_onchange_after_14_terminal_font.ps1.tmpl     set Terminal's font to MesloLGS NF
   run_after_15_git_hooks_path.ps1.tmpl             point the source's git at .githooks, on every apply
+  run_onchange_after_16_tailscale.ps1              keep Tailscale connected with nobody signed in
 ```
 
 Two scripts share the number `02` because they are one job: making PowerShell
@@ -1390,8 +1393,8 @@ what makes the same code correct here and on a machine with no redirection.
 
 ## Remote access over SSH
 
-This machine runs Windows' OpenSSH server, so another machine on the LAN can
-run commands here. Each session logs in as james, starts pwsh 7 with the managed
+This machine runs Windows' OpenSSH server, so another machine on the LAN or the
+tailnet can run commands here. Each session logs in as james, starts pwsh 7 with the managed
 profile, and so sees the same mise runtimes, `JAVA_HOME` and checkouts as a
 terminal on the desk. Script 11 sets this up. The
 [playbooks](#ssh-access) cover adding a key, revoking one, and bumping pwsh.
@@ -1436,7 +1439,7 @@ rights.** Four limits narrow who can get one:
 | Limit | Where |
 | --- | --- |
 | Keys only, from one file. `AuthenticationMethods publickey` allows nothing else, and the repo's `sshd_config` is the one sshd runs. Script 11 confirms both with `sshd -T` | `sshd_config`, script 11 |
-| Port 22 answers only on Private networks, from the local subnet | firewall rule `OpenSSH-Server-In-TCP`, script 11 |
+| Port 22 answers only on Private networks, from the local subnet, and to a machine on the tailnet | firewall rule `OpenSSH-Server-In-TCP`, script 11; Tailscale's own `Tailscale-In` rules, which script 11 accepts: see [Tailscale](#tailscale) |
 | No port, agent, X11 or tunnel forwarding. `DisableForwarding yes`, which no key option can override, and `restrict` on every key line as a second check | `sshd_config`, `administrators_authorized_keys` |
 | Each private key has a passphrase, so a copied key file is useless. sophon cannot enforce this | each client; on a Mac, the Keychain holds it |
 
@@ -1450,10 +1453,94 @@ of the home directory would close one of these paths and leave the profile and
 mise open.
 
 Locking each key to its client's address with `from=` was considered and
-dropped. The firewall already confines logins to the LAN, so `from=` only adds
-protection against a stolen key used from another device on it, and the
+dropped. The firewall already confines logins to the LAN and the tailnet, so
+`from=` only adds protection against a stolen key used from another device on
+one of them, and the
 passphrase covers that case without locking a client out whenever its address
 changes.
+
+### Tailscale
+
+sophon is on a tailnet, the Tailscale network the other machines are signed in
+to, and has a name there: `sophon`. That is what makes `ssh sophon` work from
+outside the LAN. The winget manifest installs Tailscale, and script 16 sets two
+things a plain install leaves out:
+
+- **Unattended mode.** Without it Tailscale connects only while someone is
+  signed in at the desktop, so after a restart sophon would be out of reach.
+  Script 16 runs `tailscale set --unattended=true`, and reads the setting back
+  to see that it took.
+- **The service starts with Windows.** The installer sets that. Script 16 puts
+  it back if it has been changed.
+
+**Signing in is done by hand, once.** It needs a browser:
+
+```powershell
+tailscale up --unattended
+```
+
+Open the address it prints on any machine and approve the login. Then, in the
+[admin console](https://login.tailscale.com/admin/machines), turn off key
+expiry for sophon. With it on, sophon leaves the tailnet after 180 days and has
+to be signed in again at its console. Script 16 says when sophon is signed out.
+The certification checks do not look, because the VM is never signed in.
+
+A rebuilt sophon comes back as a new machine. Delete the old entry in the admin
+console first, or the new one is named `sophon-1` and `ssh sophon` reaches
+nothing.
+
+**The firewall's default block does not cover the tailnet.** Windows Firewall
+blocks an inbound connection that no rule allows, which is what keeps a port
+with no rule off the LAN. Tailscale adds two inbound Allow rules of its own,
+both named `Tailscale-In`, one for sophon's IPv4 tailnet address and one for
+its IPv6. Each allows every program on every port, for whatever is addressed
+to that address. So a machine on the tailnet reaches every port sophon listens
+on that has no rule of its own, port 22 included. Tested on 2026-11-26 with a
+listener on port 8099 and no rule for it: reachable from Neuromancer and from
+rama over the tailnet, blocked from rama over the LAN.
+
+**A Block rule still wins.** Windows Firewall puts an explicit Block rule
+ahead of any Allow rule, Tailscale's included. Tested on 2026-11-27 with the
+same listener: with a Block rule for TCP port 8099 the port could not be
+reached over the tailnet, port 22 still could, and with the rule removed the
+port was reachable again.
+
+What limits the tailnet otherwise is who is on it. Only machines signed in to
+this tailnet can send anything, and the tailnet's access rules, in the admin
+console, say which of them may reach which ports. Those rules are not managed
+here, and by default they allow everything. To keep a service off the tailnet,
+do one of these:
+
+- Bind it to the loopback address or to sophon's LAN address.
+- Add a Block rule for its port. It blocks the port from the LAN as well:
+
+  ```powershell
+  New-NetFirewallRule -DisplayName 'Block 3000' -Direction Inbound -Protocol TCP -LocalPort 3000 -Action Block
+  ```
+
+A Block rule for port 22 would shut ssh out, from the LAN and the tailnet
+both. Script 11 looks at Allow rules only and would not notice it.
+
+**Script 11 accepts those rules and no others.** It stops the apply when any
+rule but its own lets SSH in. The exception is a rule whose every local
+address is one address in Tailscale's ranges, `100.64.0.0/10` or
+`fd7a:115c:a1e0::/48`, and is an address the adapter named `Tailscale` holds:
+it lets SSH in from the tailnet alone. The range by itself would not do,
+because carriers use `100.64.0.0/10` too. The rule is told by that address,
+not by its name. `tests\openssh-server.tests.ps1` has the cases.
+
+The exception holds only once sshd is locked. On a machine where sshd has not
+been set up yet, script 11 starts it once on Windows' default config, which
+allows passwords, and keeps every client away while it does. Tailscale's rules
+would let the tailnet through, so with Tailscale connected the script stops and
+says what to do: `tailscale down`, `chezmoi apply`, then
+`tailscale up --unattended`. A rebuild does not meet this, because script 11
+locks sshd in the apply that installs Tailscale, before anyone has signed in.
+
+**Check a machine that has restarted with `ssh <name> hostname`, not
+`tailscale ping`.** From the Mac app, `tailscale ping` to a machine that has
+just restarted fails until some other connection is made to it:
+[dev-config#7](https://github.com/jcouball/dev-config/issues/7).
 
 ### A second pwsh, just for sshd
 
