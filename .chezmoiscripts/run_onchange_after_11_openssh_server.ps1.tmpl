@@ -1,4 +1,5 @@
-# Serve SSH on the LAN, so another machine can run commands here.
+# Serve SSH on the LAN and the tailnet, so another machine can run commands
+# here.
 #
 # Windows ships its own OpenSSH server as an optional capability, not a winget
 # package, so the manifest cannot install it and this script does. It also
@@ -9,8 +10,11 @@
 #   - Keys only, from one file. sshd_config comes from this repo, and allows
 #     publickey alone, so nothing lets a client in without a line in the file
 #     this script writes.
-#   - LAN only. The firewall rule answers on Private networks, from the local
-#     subnet.
+#   - LAN and tailnet only. This script's firewall rule answers on Private
+#     networks, from the local subnet. Tailscale adds rules of its own, named
+#     Tailscale-In, that let in anything addressed to sophon's tailnet
+#     address, port 22 included. Those are accepted once sshd is locked, and
+#     any other rule that lets SSH in is not: see step 3.
 #   - No forwarding. sshd_config sets DisableForwarding, which no key option
 #     can override, and each key line's options must still be exactly
 #     `restrict` or `restrict,pty`; this script rejects any other. The key
@@ -131,6 +135,61 @@ function Get-SshdComplaint {
     if (Test-Path $sshdLog) { (Get-Content $sshdLog) -join "`n" } else { '' }
 }
 
+# Whether a firewall rule's local address is one address on a tailnet: in
+# 100.64.0.0/10, the range Tailscale gives its machines, or in
+# fd7a:115c:a1e0::/48, its IPv6 range. A rule limited to such an address lets
+# in only what arrives over the tailnet. One address only: Any, LocalSubnet, a
+# range and a wider prefix are all false. A suffix is taken only when it means
+# one address in that address's own family: /32 or the full mask for IPv4, /128
+# for IPv6. An IPv6 address with /32 is a prefix far wider than the tailnet.
+# tests\openssh-server.tests.ps1 reads this function out of this file and runs
+# it.
+function Test-TailnetAddress([string]$address) {
+    $text = $address
+    $suffix = $null
+    $slash = $address.IndexOf('/')
+    if ($slash -ge 0) {
+        $text = $address.Substring(0, $slash)
+        $suffix = $address.Substring($slash + 1)
+    }
+    $ip = $null
+    if (-not [System.Net.IPAddress]::TryParse($text, [ref]$ip)) { return $false }
+    $bytes = $ip.GetAddressBytes()
+    if ($bytes.Length -eq 4) {
+        # TryParse also takes 100.5 and a bare number, and fills in the rest,
+        # so IPv4 text has to be the address as written out. IPv6 is not held
+        # to that: one address has several spellings, compressed or in full,
+        # and its bytes are what is judged.
+        if ($ip.ToString() -ne $text) { return $false }
+        if ($null -ne $suffix -and $suffix -ne '32' -and $suffix -ne '255.255.255.255') { return $false }
+        return ($bytes[0] -eq 100 -and ($bytes[1] -band 0xC0) -eq 64)
+    }
+    if ($null -ne $suffix -and $suffix -ne '128') { return $false }
+    return ($bytes[0] -eq 0xfd -and $bytes[1] -eq 0x7a -and $bytes[2] -eq 0x11 -and
+            $bytes[3] -eq 0x5c -and $bytes[4] -eq 0xa1 -and $bytes[5] -eq 0xe0)
+}
+
+# Whether a firewall rule's local address is one of $assigned, the addresses an
+# adapter holds. Being in Tailscale's ranges is not enough to make an address
+# sophon's on the tailnet: carriers use 100.64.0.0/10 too, and a physical
+# adapter on such a network has an address there. Compared as addresses, not
+# as text, so case and a zone suffix do not matter. A suffix on $address is
+# ignored here: Test-TailnetAddress is what judges it. The same test file runs
+# this function.
+function Test-AddressAssigned([string]$address, [string[]]$assigned) {
+    $text = $address
+    $slash = $address.IndexOf('/')
+    if ($slash -ge 0) { $text = $address.Substring(0, $slash) }
+    $ip = $null
+    if (-not [System.Net.IPAddress]::TryParse($text, [ref]$ip)) { return $false }
+    foreach ($candidate in $assigned) {
+        $other = $null
+        if ([System.Net.IPAddress]::TryParse(("$candidate" -replace '%.*$', ''), [ref]$other) -and
+            $other.Equals($ip)) { return $true }
+    }
+    return $false
+}
+
 # The configuration sshd will actually use, not the text of the file. sshd
 # takes the first value it reads for a keyword, and a value inside a Match
 # block applies only to that block. Checks the global settings, which every
@@ -205,7 +264,10 @@ try {
         # and a domain network as DomainAuthenticated, and the rule answers on
         # neither. The script warns at the end and still exits 0; see the
         # header.
-        $privateNets = @(Get-NetConnectionProfile | Where-Object { $_.NetworkCategory -eq 'Private' })
+        # Tailscale's adapter is Private too, and is left out: it is not the
+        # LAN, and with it counted a LAN that is still Public would go unnoticed.
+        $privateNets = @(Get-NetConnectionProfile |
+                         Where-Object { $_.NetworkCategory -eq 'Private' -and $_.InterfaceAlias -ne 'Tailscale' })
         $networkBlocked = $privateNets.Count -eq 0
         if (-not $networkBlocked) {
             $ip = Get-NetIPAddress -AddressFamily IPv4 -InterfaceIndex $privateNets.InterfaceIndex `
@@ -298,6 +360,21 @@ try {
     # left out. This script names the other rules rather than changing rules
     # it did not create.
     #
+    # Tailscale's rules are the exception. Tailscale-In allows every program
+    # and every port, and is limited by its local address to sophon's own
+    # tailnet address. A rule whose every local address is a tailnet address
+    # lets SSH in from the tailnet alone, and is accepted. It is told by that
+    # address, not by its name: each local address has to be in Tailscale's
+    # ranges and be one the adapter named Tailscale holds now. The range alone
+    # would also accept a rule for a physical adapter on a carrier's network.
+    #
+    # Accepted only when sshd was already locked at the start of this run. On
+    # a machine where it was not, the next step starts sshd on its default
+    # config, which allows passwords, and this script's own rule is disabled
+    # to keep every client away while it does. Tailscale's rules would let a
+    # machine on the tailnet through. So the script stops and says to
+    # disconnect Tailscale first.
+    #
     # Each filter lookup is a CIM call, and sophon has over 150 of these rules,
     # so the port filters come in one pipeline, keyed back to their rules by
     # InstanceID, and only the rules on port 22 get the other two lookups.
@@ -311,16 +388,32 @@ try {
                 ($_ -match '^(\d+)-(\d+)$' -and [int]$Matches[1] -le 22 -and 22 -le [int]$Matches[2])
             }).Count -gt 0) { $ruleById[$ports.InstanceID] }
     })
+    $tailscaleAddresses = @(Get-NetIPAddress -InterfaceAlias 'Tailscale' -ErrorAction SilentlyContinue |
+                            ForEach-Object { $_.IPAddress })
+    $tailnetRules = New-Object System.Collections.Generic.List[object]
     $otherRules = @(foreach ($r in $onPort22) {
         $app = $r | Get-NetFirewallApplicationFilter
         $svc = $r | Get-NetFirewallServiceFilter
         $anyProgram = $app.Program -eq 'Any' -and -not $app.Package -and $svc.Service -eq 'Any' -and -not $r.Owner
         $sshdOnly = $app.Program -like '*\OpenSSH\sshd.exe' -or $svc.Service -eq 'sshd'
-        if ($anyProgram -or $sshdOnly) { $r }
+        if ($anyProgram -or $sshdOnly) {
+            $local = @(($r | Get-NetFirewallAddressFilter).LocalAddress)
+            $tailnetOnly = $local.Count -gt 0 -and
+                           @($local | Where-Object {
+                                 -not ((Test-TailnetAddress $_) -and (Test-AddressAssigned $_ $tailscaleAddresses))
+                             }).Count -eq 0
+            if ($tailnetOnly) { $tailnetRules.Add($r) } else { $r }
+        }
     })
     if ($otherRules.Count -gt 0) {
-        throw ('Other inbound firewall rules also allow SSH, so it is not limited to the LAN. ' +
+        throw ('Other inbound firewall rules also allow SSH, so it is not limited to the LAN and the tailnet. ' +
                'Disable or remove them, then apply again: ' + ($otherRules.Name -join ', '))
+    }
+    if ($tailnetRules.Count -gt 0 -and -not $wasLocked) {
+        throw ('Tailscale is connected and sshd is not locked yet. A machine on the tailnet could ' +
+               'reach sshd while it runs its default config, which allows passwords. Disconnect ' +
+               'Tailscale, apply again, and connect once the apply has finished: ' +
+               'tailscale down; chezmoi apply; tailscale up --unattended')
     }
 
     # sshd writes its default sshd_config, and its host keys, on its first

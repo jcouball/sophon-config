@@ -16,7 +16,7 @@
 # Generate each key on its client WITH a passphrase. Follow "Authorize a Mac"
 # in the README: its commands refuse to make a key without one, and check the
 # result. The passphrase is what makes a copied key file useless. No from= address
-# restriction: the firewall already limits logins to the LAN, and from= would
+# restriction: the firewall already limits logins to the LAN and the tailnet, and from= would
 # lock a client out whenever its address changed.
 #
 # Add a line of this form below:

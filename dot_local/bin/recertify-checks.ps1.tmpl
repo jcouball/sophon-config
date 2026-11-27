@@ -117,6 +117,24 @@ Test-Outcome 'sshd accepts keys only' 'passwordauthentication no; authentication
     $found -match '(?m)^passwordauthentication no\s*$' -and $found -match '(?m)^authenticationmethods publickey\s*$'
 }
 
+# --- Tailscale (script 16) ---------------------------------------------------
+
+# Signing in is not checked: it needs a person and a browser, and the
+# certification VM is never signed in.
+$tailscaleExe = Join-Path $env:ProgramFiles 'Tailscale\tailscale.exe'
+
+Test-Outcome 'Tailscale is running and starts with Windows' 'Running, Automatic' {
+    $service = Get-Service Tailscale
+    "$($service.Status), $($service.StartType)"
+} { param($found) $found -eq 'Running, Automatic' }
+
+# Unattended mode is the setting Tailscale calls ForceDaemon. `debug prefs` is
+# the one command that prints it.
+Test-Outcome 'Tailscale stays connected with nobody signed in to Windows' 'ForceDaemon: true' {
+    $prefs = ((& $tailscaleExe debug prefs) -join "`n") | ConvertFrom-Json
+    "ForceDaemon: $("$($prefs.ForceDaemon)".ToLower())"
+} { param($found) $found -eq 'ForceDaemon: true' }
+
 # --- chezmoi ----------------------------------------------------------------
 
 # Always-run scripts are left out: script 15 is pending after every apply. The
