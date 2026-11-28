@@ -57,6 +57,52 @@ function Split-WingetManifest($Text, $Ids) {
     $result
 }
 
+# A PACKAGE WHOSE INSTALLER FOUND WINDOWS INSTALLER BUSY IS IMPORTED AGAIN.
+# Windows Installer runs one installation at a time, and an MSI started while
+# another is running ends at once with exit code 1618. winget import goes on
+# to the next package and does not come back. The other installation need not
+# be one of winget's: the WSL package is done, as far as winget can tell, once
+# it is registered, and its service then installs wsl.msi for another 13
+# seconds. A certification run lost Tailscale, the next package, that way.
+$busyTries = 3          # more imports of the packages that found it busy
+$busyWaitSeconds = 30   # before each one
+
+# The ids of the packages whose installer ended with exit code 1618, from the
+# lines winget import printed. winget names each package on a line of its own,
+# "(19/20) Found Tailscale [Tailscale.Tailscale] Version 1.104.7", before the
+# lines about it. Takes text and returns ids, so a test can call it.
+function Get-WingetBusyIds($Lines) {
+    $ids = @()
+    $current = $null
+    foreach ($line in @($Lines)) {
+        if ("$line" -match '^\s*\(\d+/\d+\) .*\[([^\[\]]+)\]') { $current = $Matches[1]; continue }
+        if ($current -and "$line" -match 'exit code: 1618\s*$') { $ids += $current; $current = $null }
+    }
+    $ids
+}
+
+# What became of one package that was imported again by itself, from the
+# lines winget printed and its exit code: 'installed', 'busy' when its
+# installer ended with 1618 again, or 'failed' for any other ending. winget
+# import exits 0 for a package it installed and for one already installed.
+# Takes text and a number, so a test can call it.
+function Get-WingetAgainResult($Lines, $ExitCode) {
+    if ($ExitCode -eq 0) { return 'installed' }
+    if (@(Get-WingetBusyIds $Lines).Count -gt 0) { return 'busy' }
+    'failed'
+}
+
+# Run winget import here, print what it prints, and return the lines. winget's
+# exit code is in $LASTEXITCODE afterwards.
+function Invoke-WingetImport($ManifestPath, $Flags) {
+    winget import --import-file $ManifestPath @Flags | ForEach-Object {
+        $line = "$_"
+        # winget draws its progress bars and spinner as lines of their own.
+        if ($line.Trim() -and $line -notmatch '[\u2588\u2592]' -and $line -notmatch '^\s*[-\\|/]\s*$') { Write-Host $line }
+        $line
+    }
+}
+
 function Test-Elevated() {
     ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
         [Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -129,12 +175,42 @@ $work = Join-Path ([IO.Path]::GetTempPath()) "windows-dev-config-winget-$PID"
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 $utf8 = New-Object Text.UTF8Encoding $false
 $portableFailed = $false
+$busyFailed = $false
 try {
     if ($split.MainCount -gt 0) {
         $mainManifest = Join-Path $work 'main.json'
         [IO.File]::WriteAllText($mainManifest, $split.Main, $utf8)
         Write-Host "Importing $($split.MainCount) packages from $manifest ..."
-        winget import --import-file $mainManifest @importFlags
+        $busy = @(Get-WingetBusyIds (Invoke-WingetImport $mainManifest $importFlags))
+        # One package to an import from here on, so that winget's exit code
+        # says what became of that package.
+        $failedAgain = @()
+        foreach ($try in 1..$busyTries) {
+            if ($busy.Count -eq 0) { break }
+            Write-Host "Windows Installer was busy when these were installed: $($busy -join ', ')."
+            Write-Host "Importing them again in $busyWaitSeconds seconds (try $try of $busyTries) ..."
+            Start-Sleep -Seconds $busyWaitSeconds
+            $stillBusy = @()
+            foreach ($id in $busy) {
+                # The split's "portable" part is the packages it is given by name.
+                $againManifest = Join-Path $work 'again.json'
+                [IO.File]::WriteAllText($againManifest, (Split-WingetManifest $split.Main @($id)).Portable, $utf8)
+                $lines = @(Invoke-WingetImport $againManifest $importFlags)
+                $code = $LASTEXITCODE
+                switch (Get-WingetAgainResult $lines $code) {
+                    'busy' { $stillBusy += $id }
+                    'failed' {
+                        Write-Warning "Importing $id again ended with exit code $code, so it is not installed. Rerun chezmoi apply once it is fixed."
+                        $failedAgain += $id
+                    }
+                }
+            }
+            $busy = $stillBusy
+        }
+        if ($busy.Count -gt 0) {
+            Write-Warning "Windows Installer was still busy after $busyTries more tries, so these are not installed: $($busy -join ', '). Rerun chezmoi apply."
+        }
+        if ($busy.Count -gt 0 -or $failedAgain.Count -gt 0) { $busyFailed = $true }
     }
 
     # After the rest: the portable packages depend on the Visual C++ runtime,
@@ -166,8 +242,10 @@ try {
     }
 }
 
-# EXIT 1 WHEN THE PORTABLE IMPORT FAILED. chezmoi records a run_onchange script
-# as done when it exits 0, and does not run it again until the manifest
-# changes. Exiting 0 here would leave mise and the others missing for good.
-# After the finally, so the temporary folder is gone either way.
-if ($portableFailed) { exit 1 }
+# EXIT 1 WHEN THE PORTABLE IMPORT FAILED, OR A PACKAGE THAT FOUND WINDOWS
+# INSTALLER BUSY WAS NOT INSTALLED BY THE LATER TRIES, WHETHER IT STAYED BUSY
+# OR FAILED ANOTHER WAY. chezmoi records a run_onchange script as done
+# when it exits 0, and does not run it again until the manifest changes.
+# Exiting 0 here would leave mise and the others missing for good. After the
+# finally, so the temporary folder is gone either way.
+if ($portableFailed -or $busyFailed) { exit 1 }

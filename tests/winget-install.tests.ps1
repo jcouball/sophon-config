@@ -1,10 +1,13 @@
-# Tests of Split-WingetManifest, the function script 01 uses to divide the
-# winget manifest into the portable packages and the rest.
+# Tests of three functions in script 01: Split-WingetManifest, which divides
+# the winget manifest into the portable packages and the rest,
+# Get-WingetBusyIds, which reads from winget's output the packages whose
+# installer found Windows Installer busy, and Get-WingetAgainResult, which
+# says what became of a package that was imported again.
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tests\winget-install.tests.ps1
 #   pwsh       -NoProfile -File tests\winget-install.tests.ps1
 #
-# Run it both ways. The function is read out of the script's template and
+# Run it both ways. The functions are read out of the script's template and
 # defined here, so the script itself is not run, winget is not called and
 # nothing on the machine is read or changed. TESTING.md says where this fits.
 #
@@ -22,6 +25,16 @@ $ErrorActionPreference = 'Stop'
 $text = [IO.File]::ReadAllText($Script)
 if ($text -notmatch '(?ms)^function Split-WingetManifest\(.*?^\}') {
     Write-Host "FAIL  could not find Split-WingetManifest in $Script"
+    exit 1
+}
+Invoke-Expression $Matches[0]
+if ($text -notmatch '(?ms)^function Get-WingetBusyIds\(.*?^\}') {
+    Write-Host "FAIL  could not find Get-WingetBusyIds in $Script"
+    exit 1
+}
+Invoke-Expression $Matches[0]
+if ($text -notmatch '(?ms)^function Get-WingetAgainResult\(.*?^\}') {
+    Write-Host "FAIL  could not find Get-WingetAgainResult in $Script"
     exit 1
 }
 Invoke-Expression $Matches[0]
@@ -89,6 +102,88 @@ $r = Split-WingetManifest $real $portableIds
 Check "the real manifest: every package is in exactly one part ($($all.Count) packages)" ($r.MainCount + $r.PortableCount -eq $all.Count -and @(Compare-Object $all ((Ids $r.Main) + (Ids $r.Portable))).Count -eq 0)
 Check "the real manifest: each of the script's portable packages is in it ($($portableIds -join ', '))" ($r.PortableCount -eq $portableIds.Count) "found $($r.PortableCount) of $($portableIds.Count)"
 Check 'the real manifest: the Visual C++ runtime the portable packages need is in the main part' ((Ids $r.Main) -contains 'Microsoft.VCRedist.2015+.x64')
+
+# Get-WingetBusyIds. The lines are winget's own, from the certification run
+# of 2026-11-28 in which Tailscale was not installed.
+$run = @'
+(18/20) Found Windows Subsystem for Linux [Microsoft.WSL] Version 3.0.5
+This application is licensed to you by its owner.
+Starting package install...
+Successfully installed
+(19/20) Found Tailscale [Tailscale.Tailscale] Version 1.104.7
+This application is licensed to you by its owner.
+Microsoft is not responsible for, nor does it grant any licenses to, third-party packages.
+Downloading https://pkgs.tailscale.com/stable/tailscale-setup-1.104.7-amd64.msi
+Successfully verified installer hash
+Starting package install...
+Another installation is already in progress. Try again later.
+Installer failed with exit code: 1618
+Installer log is available at: C:\Users\certuser\AppData\Local\Packages\Microsoft.DesktopAppInstaller_8wekyb3d8bbwe\LocalState\DiagOutputDir\Tailscale.Tailscale.1.104.7-26-11-28-08-58-50.log
+(20/20) Found Telegram Desktop [Telegram.TelegramDesktop] Version 7.4.7
+This application is licensed to you by its owner.
+Starting package install...
+Successfully installed
+'@ -split "`r?`n"
+
+$ids = @(Get-WingetBusyIds $run)
+Check 'busy: the package whose installer ended with 1618 is found' ($ids -join ',' -eq 'Tailscale.Tailscale') ($ids -join ',')
+
+$ids = @(Get-WingetBusyIds ($run | Where-Object { $_ -notmatch '1618' }))
+Check 'busy: a run with no 1618 gives nothing' ($ids.Count -eq 0) ($ids -join ',')
+
+$ids = @(Get-WingetBusyIds ($run -replace '1618', '1603'))
+Check 'busy: another exit code is not a busy installer' ($ids.Count -eq 0) ($ids -join ',')
+
+$ids = @(Get-WingetBusyIds ($run -replace 'exit code: 1618', 'exit code: 16180'))
+Check 'busy: a longer code that starts with 1618 is not one' ($ids.Count -eq 0) ($ids -join ',')
+
+$ids = @(Get-WingetBusyIds ($run + $run))
+Check 'busy: two failures give two ids, in order' ($ids.Count -eq 2) ($ids -join ',')
+
+$twoBusy = @(
+    '(1/3) Found One [A.One] Version 1', 'Installer failed with exit code: 1618',
+    '(2/3) Found Two [B.Two] Version 2', 'Successfully installed',
+    '(3/3) Found Three [C.Three] Version 3', 'Installer failed with exit code: 1618')
+$ids = @(Get-WingetBusyIds $twoBusy)
+Check 'busy: the failures of two packages, with one between that installed' ($ids -join ',' -eq 'A.One,C.Three') ($ids -join ',')
+
+$ids = @(Get-WingetBusyIds @('(1/1) Found Tool [beta] [A.One] Version 1', 'Installer failed with exit code: 1618'))
+Check 'busy: a name with brackets in it: the id is the last pair' ($ids -join ',' -eq 'A.One') ($ids -join ',')
+
+$ids = @(Get-WingetBusyIds @('Installer failed with exit code: 1618'))
+Check 'busy: a 1618 before any package is named gives nothing' ($ids.Count -eq 0) ($ids -join ',')
+
+$ids = @(Get-WingetBusyIds @('  (1/1) Found One [A.One] Version 1  ', 'Installer failed with exit code: 1618  '))
+Check 'busy: spaces around the lines do not matter' ($ids -join ',' -eq 'A.One') ($ids -join ',')
+
+$ids = @(Get-WingetBusyIds @())
+Check 'busy: no lines at all gives nothing' ($ids.Count -eq 0)
+
+$ids = @(Get-WingetBusyIds $null)
+Check 'busy: winget printing nothing gives nothing' ($ids.Count -eq 0)
+
+# What the script does with the ids: the split, given them, is the manifest
+# to import again.
+$r = Split-WingetManifest $two @(Get-WingetBusyIds $twoBusy)
+Check 'busy: the manifest to import again has those packages only' ((Ids $r.Portable) -join ',' -eq 'A.One,C.Three') ((Ids $r.Portable) -join ',')
+
+# Get-WingetAgainResult. -1978335180 is the exit code winget import gave in
+# the certification VM for "One or more imported packages failed to install".
+$one = @('(1/1) Found Tailscale [Tailscale.Tailscale] Version 1.104.7', 'Starting package install...')
+$r = Get-WingetAgainResult ($one + 'Successfully installed') 0
+Check 'again: exit code 0 is installed' ($r -eq 'installed') $r
+$r = Get-WingetAgainResult @('Package is already installed: Tailscale.Tailscale') 0
+Check 'again: already installed, which also exits 0, is installed' ($r -eq 'installed') $r
+$r = Get-WingetAgainResult ($one + 'Installer failed with exit code: 1618') -1978335180
+Check 'again: 1618 once more is busy' ($r -eq 'busy') $r
+$r = Get-WingetAgainResult ($one + 'Installer failed with exit code: 1603') -1978335180
+Check 'again: another installer exit code is failed, not installed' ($r -eq 'failed') $r
+$r = Get-WingetAgainResult @('The source could not be found.') -1978335180
+Check 'again: winget failing before it names the package is failed' ($r -eq 'failed') $r
+$r = Get-WingetAgainResult @() 1
+Check 'again: no output and a failing exit code is failed' ($r -eq 'failed') $r
+$r = Get-WingetAgainResult $null -1
+Check 'again: nothing printed at all is failed' ($r -eq 'failed') $r
 
 Write-Host ''
 Write-Host "$passed passed, $failed failed."
