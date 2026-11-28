@@ -16,13 +16,57 @@ if (-not (Test-Path $manifest)) {
     return
 }
 
-Write-Host "Importing packages from $manifest ..."
+# PORTABLE PACKAGES ARE IMPORTED SEPARATELY. A portable package is one winget
+# unpacks into the user's own %LOCALAPPDATA%\Microsoft\WinGet\Packages, with
+# no installer. From winget 1.30 an import run from an elevated terminal
+# refuses them: "The requested operation is not permitted from an
+# administrator context on packages installed within the user scope." The
+# rest of the manifest needs the elevation, so the manifest is split in two.
+# The packages named here are imported from a scheduled task that runs as
+# this user with no elevated terminal behind it, which winget accepts; the
+# rest are imported here as before. Issue #39 has what was measured.
+#
+# Add a package here when it is portable. `winget show --id <id>` says
+# "Installer Type: portable", or "zip" for a portable program inside an
+# archive, and once installed it has a folder under the path above.
+#
+# twpayne.chezmoi is portable too and is not here: it is installed before this
+# script can run, and --no-upgrade leaves an installed package alone.
+$portableIds = @('Anthropic.ClaudeCode', 'jdx.mise', 'topgrade-rs.topgrade')
+
+# The manifest as two manifests: the packages named in $Ids, and the rest.
+# A source left with no packages is dropped. Either may come back empty, with
+# no Sources. Takes and returns JSON text, so a test can call it.
+function Split-WingetManifest($Text, $Ids) {
+    $result = @{}
+    foreach ($part in 'Main', 'Portable') {
+        $copy = $Text | ConvertFrom-Json
+        $sources = @()
+        $count = 0
+        foreach ($source in @($copy.Sources)) {
+            $kept = @($source.Packages | Where-Object { ($Ids -contains $_.PackageIdentifier) -eq ($part -eq 'Portable') })
+            if ($kept.Count -eq 0) { continue }
+            $source.Packages = $kept
+            $sources += $source
+            $count += $kept.Count
+        }
+        $copy.Sources = $sources
+        $result[$part] = $copy | ConvertTo-Json -Depth 10
+        $result["${part}Count"] = $count
+    }
+    $result
+}
+
+function Test-Elevated() {
+    ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator)
+}
 
 # --ignore-unavailable: publishers drop old manifests, and without it one missing
 #   package aborts the entire import.
 # --no-upgrade: this layer's job is to ensure a package is PRESENT, not current.
 #   Currency belongs to topgrade. Without this, every manifest change re-runs
-#   this script and upgrades all 33 packages as a side effect -- which is exactly
+#   this script and upgrades every package as a side effect -- which is exactly
 #   the "global update breaks a pinned project" failure the whole stack avoids.
 # --disable-interactivity: an unattended rebuild must never stop on a prompt.
 #
@@ -30,9 +74,100 @@ Write-Host "Importing packages from $manifest ..."
 # installers that launch their own UI will do so mid-run -- Warp opens a welcome
 # window. The rebuild is therefore not fully unattended: expect windows to appear
 # and steal focus. Nothing breaks; it just needs a human nearby.
-winget import --import-file $manifest `
-    --ignore-unavailable `
-    --no-upgrade `
-    --disable-interactivity `
-    --accept-package-agreements `
-    --accept-source-agreements
+$importFlags = '--ignore-unavailable', '--no-upgrade', '--disable-interactivity',
+    '--accept-package-agreements', '--accept-source-agreements'
+
+# Run the portable import as a scheduled task and wait for it, printing what
+# it prints. The task logs on as this user without a password (S4U), so it
+# needs no desktop and works in an ssh session. It is removed afterwards.
+# The task is named for this process, so two applies at once, by two users,
+# each have their own. Returns winget's exit code, or -1 if the task did not
+# finish.
+function Invoke-PortableImport($ManifestPath, $Flags, $LogPath, $Minutes) {
+    $task = "windows-dev-config-winget-portable-$PID"
+    # The paths go into single-quoted PowerShell text, where '' is one quote.
+    $quotedManifest = $ManifestPath.Replace("'", "''")
+    $quotedLog = $LogPath.Replace("'", "''")
+    $command = "& { winget import --import-file '$quotedManifest' $($Flags -join ' '); 'WINGET EXIT ' + `$LASTEXITCODE } *> '$quotedLog'"
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+    $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded"
+    $principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType S4U -RunLevel Limited
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::FromMinutes($Minutes + 5))
+    Register-ScheduledTask -TaskName $task -Action $action -Principal $principal -Settings $settings -Force | Out-Null
+    $code = -1
+    try {
+        Start-ScheduledTask -TaskName $task
+        $shown = 0
+        $deadline = (Get-Date).AddMinutes($Minutes)
+        while ($true) {
+            Start-Sleep -Seconds 3
+            $lines = @()
+            if (Test-Path $LogPath) { $lines = @(Get-Content $LogPath -ErrorAction SilentlyContinue) }
+            foreach ($line in @($lines | Select-Object -Skip $shown)) {
+                if ($line -match '^WINGET EXIT (-?\d+)') { $code = [int]$Matches[1]; continue }
+                # winget draws its progress bars and spinner as lines of their own.
+                if ($line.Trim() -and $line -notmatch '[\u2588\u2592]' -and $line -notmatch '^\s*[-\\|/]\s*$') { Write-Host "    $line" }
+            }
+            $shown = $lines.Count
+            if ($code -ne -1) { break }
+            if ((Get-Date) -gt $deadline) { break }
+            if ($shown -eq 0 -and (Get-ScheduledTask -TaskName $task).State -ne 'Running' -and
+                (Get-ScheduledTaskInfo -TaskName $task).LastTaskResult -notin 0, 267009, 267011, 267045) {
+                Write-Warning "The task did not start winget: result $((Get-ScheduledTaskInfo -TaskName $task).LastTaskResult)."
+                break
+            }
+        }
+    } finally {
+        Stop-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskName $task -Confirm:$false -ErrorAction SilentlyContinue
+    }
+    $code
+}
+
+$split = Split-WingetManifest ([IO.File]::ReadAllText($manifest)) $portableIds
+$work = Join-Path ([IO.Path]::GetTempPath()) "windows-dev-config-winget-$PID"
+New-Item -ItemType Directory -Force -Path $work | Out-Null
+$utf8 = New-Object Text.UTF8Encoding $false
+$portableFailed = $false
+try {
+    if ($split.MainCount -gt 0) {
+        $mainManifest = Join-Path $work 'main.json'
+        [IO.File]::WriteAllText($mainManifest, $split.Main, $utf8)
+        Write-Host "Importing $($split.MainCount) packages from $manifest ..."
+        winget import --import-file $mainManifest @importFlags
+    }
+
+    # After the rest: the portable packages depend on the Visual C++ runtime,
+    # which is in the other part and needs the elevation.
+    if ($split.PortableCount -gt 0) {
+        $portableManifest = Join-Path $work 'portable.json'
+        [IO.File]::WriteAllText($portableManifest, $split.Portable, $utf8)
+        Write-Host "Importing the $($split.PortableCount) portable packages ..."
+        if (Test-Elevated) {
+            $code = Invoke-PortableImport $portableManifest $importFlags (Join-Path $work 'portable.log') 60
+        } else {
+            winget import --import-file $portableManifest @importFlags
+            $code = $LASTEXITCODE
+        }
+        if ($code -eq -1) {
+            Write-Warning 'The portable import did not finish. Rerun chezmoi apply.'
+            $portableFailed = $true
+        } elseif ($code -ne 0) {
+            Write-Warning "The portable import ended with exit code $code. Rerun chezmoi apply once it is fixed."
+            $portableFailed = $true
+        }
+    }
+} finally {
+    # A task that was stopped holds its log open for a moment longer.
+    foreach ($try in 1..10) {
+        Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
+        if (-not (Test-Path $work)) { break }
+        Start-Sleep -Seconds 1
+    }
+}
+
+# EXIT 1 WHEN THE PORTABLE IMPORT FAILED. chezmoi records a run_onchange script
+# as done when it exits 0, and does not run it again until the manifest
+# changes. Exiting 0 here would leave mise and the others missing for good.
+# After the finally, so the temporary folder is gone either way.
+if ($portableFailed) { exit 1 }
