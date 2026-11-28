@@ -166,6 +166,21 @@ one at a time, up to three times. If one is still not installed, because it
 was busy every time or because a later try failed some other way, it says
 which and exits 1, so the next `chezmoi apply` runs the script again.
 
+**A failed import makes script 01 exit 1.** `winget import` exits non-zero
+when it tried to install a package and could not, and names the package in
+what it prints. Script 01 then exits 1, so chezmoi does not record it as done
+and the next `chezmoi apply` runs it again. One case needs a second look: when
+a package found Windows Installer busy, the exit code does not say whether
+that was all that failed. Once the busy packages are installed, the script
+imports the whole part again, which exits 0 only if winget has no failure left
+to report.
+
+That does not prove every package is installed. A package winget cannot find
+in its source is skipped, because the import is run with
+`--ignore-unavailable`, and winget still exits 0. Script 01 then exits 0 with
+that package missing, and chezmoi records it as done. winget prints "Package
+not found" and the id when it happens.
+
 #### Uninstall an application
 
 ```powershell
