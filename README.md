@@ -142,6 +142,19 @@ deliberate exclusions, which `winget export` keeps re-adding. Currently
 excluded: **`Warp.Warp`**, whose installer takes an extraordinarily long time and
 opens a welcome window mid-provisioning. Install it by hand when wanted.
 
+**A portable package also goes in script 01's list.** A portable package is
+one winget unpacks into `%LOCALAPPDATA%\Microsoft\WinGet\Packages`, with no
+installer: `winget show --id <id>` says `Installer Type: portable`, or `zip`
+for a portable program inside an archive. From winget 1.30, an import run from
+an elevated terminal refuses these with "not permitted from an administrator
+context on packages installed within the user scope", and the rebuild's import
+is elevated. Script 01 therefore imports the packages named in its
+`$portableIds` from a scheduled task that runs as the same user with no
+elevated terminal behind it, and the rest as before. A portable package that
+is in the manifest and not in that list is skipped by a rebuild, and
+`tests\winget-install.tests.ps1` does not catch that: it checks only that
+each name in the list is in the manifest.
+
 #### Uninstall an application
 
 ```powershell
@@ -1249,7 +1262,7 @@ dot_local/bin/recertify-vm.ps1              what those two share: the password, 
 dot_local/bin/recertify-checks.ps1.tmpl     the checks a rebuilt machine has to pass
 
 .chezmoiscripts/
-  run_onchange_01_winget_install.ps1.tmpl          winget import
+  run_onchange_01_winget_install.ps1.tmpl          winget import, the portable packages separately
   run_once_02_powershell_execution_policy.ps1      let 5.1 load the stubs at all
   run_once_02_powershell_profile_stubs.ps1         stubs at $PROFILE, wherever that is
   run_once_03_build_tools.ps1                      VS Build Tools C++ workload
