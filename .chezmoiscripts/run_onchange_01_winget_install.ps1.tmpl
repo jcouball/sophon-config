@@ -92,6 +92,27 @@ function Get-WingetAgainResult($Lines, $ExitCode) {
     'failed'
 }
 
+# THE MAIN IMPORT'S EXIT CODE IS CHECKED. winget import exits non-zero when
+# it tried to install a package and could not: an installer that failed, a
+# download that stopped, a source that did not answer. It exits 0 otherwise.
+# That is not the same as every package being installed: a package winget
+# cannot find in its source is skipped, because of --ignore-unavailable, and
+# the exit code is still 0. Such a package stays missing and this script
+# does not notice.
+#
+# What to do about the exit code, given how many packages found Windows
+# Installer busy: 'done' for 0; 'failed' for a failing code with no busy
+# package to explain it; 'check' for a failing code when there were busy
+# ones, because the code does not say whether they were all that failed. The
+# script then imports the whole part once more, after the busy ones are
+# installed: that import exits 0 only if winget has no failure left to
+# report. Takes two numbers, so a test can call it.
+function Get-WingetMainNext($ExitCode, $BusyCount) {
+    if ($ExitCode -eq 0) { return 'done' }
+    if ($BusyCount -eq 0) { return 'failed' }
+    'check'
+}
+
 # Run winget import here, print what it prints, and return the lines. winget's
 # exit code is in $LASTEXITCODE afterwards.
 function Invoke-WingetImport($ManifestPath, $Flags) {
@@ -176,12 +197,16 @@ New-Item -ItemType Directory -Force -Path $work | Out-Null
 $utf8 = New-Object Text.UTF8Encoding $false
 $portableFailed = $false
 $busyFailed = $false
+$mainFailed = $false
 try {
     if ($split.MainCount -gt 0) {
         $mainManifest = Join-Path $work 'main.json'
         [IO.File]::WriteAllText($mainManifest, $split.Main, $utf8)
         Write-Host "Importing $($split.MainCount) packages from $manifest ..."
-        $busy = @(Get-WingetBusyIds (Invoke-WingetImport $mainManifest $importFlags))
+        $lines = @(Invoke-WingetImport $mainManifest $importFlags)
+        $mainCode = $LASTEXITCODE
+        $busy = @(Get-WingetBusyIds $lines)
+        $mainNext = Get-WingetMainNext $mainCode $busy.Count
         # One package to an import from here on, so that winget's exit code
         # says what became of that package.
         $failedAgain = @()
@@ -211,6 +236,19 @@ try {
             Write-Warning "Windows Installer was still busy after $busyTries more tries, so these are not installed: $($busy -join ', '). Rerun chezmoi apply."
         }
         if ($busy.Count -gt 0 -or $failedAgain.Count -gt 0) { $busyFailed = $true }
+
+        # Not when a busy package is still missing: the script exits 1 for
+        # that already, and the import below would only fail on it again.
+        if ($mainNext -eq 'check' -and -not $busyFailed) {
+            Write-Host "Importing the $($split.MainCount) packages once more, to see that nothing else failed ..."
+            $null = @(Invoke-WingetImport $mainManifest $importFlags)
+            $mainCode = $LASTEXITCODE
+            if ($mainCode -ne 0) { $mainNext = 'failed' }
+        }
+        if ($mainNext -eq 'failed') {
+            Write-Warning "The import ended with exit code $mainCode, so at least one package is not installed. winget's lines above say which. Rerun chezmoi apply once it is fixed."
+            $mainFailed = $true
+        }
     }
 
     # After the rest: the portable packages depend on the Visual C++ runtime,
@@ -242,10 +280,10 @@ try {
     }
 }
 
-# EXIT 1 WHEN THE PORTABLE IMPORT FAILED, OR A PACKAGE THAT FOUND WINDOWS
-# INSTALLER BUSY WAS NOT INSTALLED BY THE LATER TRIES, WHETHER IT STAYED BUSY
-# OR FAILED ANOTHER WAY. chezmoi records a run_onchange script as done
-# when it exits 0, and does not run it again until the manifest changes.
-# Exiting 0 here would leave mise and the others missing for good. After the
-# finally, so the temporary folder is gone either way.
-if ($portableFailed -or $busyFailed) { exit 1 }
+# EXIT 1 WHEN EITHER IMPORT FAILED, OR A PACKAGE THAT FOUND WINDOWS INSTALLER
+# BUSY WAS NOT INSTALLED BY THE LATER TRIES, WHETHER IT STAYED BUSY OR FAILED
+# ANOTHER WAY. chezmoi records a run_onchange script as done when it exits 0,
+# and does not run it again until the manifest changes. Exiting 0 here would
+# leave the missing packages missing for good. After the finally, so the
+# temporary folder is gone either way.
+if ($portableFailed -or $busyFailed -or $mainFailed) { exit 1 }

@@ -1,8 +1,9 @@
-# Tests of three functions in script 01: Split-WingetManifest, which divides
+# Tests of four functions in script 01: Split-WingetManifest, which divides
 # the winget manifest into the portable packages and the rest,
 # Get-WingetBusyIds, which reads from winget's output the packages whose
-# installer found Windows Installer busy, and Get-WingetAgainResult, which
-# says what became of a package that was imported again.
+# installer found Windows Installer busy, Get-WingetAgainResult, which
+# says what became of a package that was imported again, and
+# Get-WingetMainNext, which says what to do about the main import's exit code.
 #
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tests\winget-install.tests.ps1
 #   pwsh       -NoProfile -File tests\winget-install.tests.ps1
@@ -35,6 +36,11 @@ if ($text -notmatch '(?ms)^function Get-WingetBusyIds\(.*?^\}') {
 Invoke-Expression $Matches[0]
 if ($text -notmatch '(?ms)^function Get-WingetAgainResult\(.*?^\}') {
     Write-Host "FAIL  could not find Get-WingetAgainResult in $Script"
+    exit 1
+}
+Invoke-Expression $Matches[0]
+if ($text -notmatch '(?ms)^function Get-WingetMainNext\(.*?^\}') {
+    Write-Host "FAIL  could not find Get-WingetMainNext in $Script"
     exit 1
 }
 Invoke-Expression $Matches[0]
@@ -184,6 +190,24 @@ $r = Get-WingetAgainResult @() 1
 Check 'again: no output and a failing exit code is failed' ($r -eq 'failed') $r
 $r = Get-WingetAgainResult $null -1
 Check 'again: nothing printed at all is failed' ($r -eq 'failed') $r
+
+# Get-WingetMainNext, with the exit code and the number of busy packages.
+$r = Get-WingetMainNext 0 0
+Check 'main: exit code 0 and nothing busy is done' ($r -eq 'done') $r
+$r = Get-WingetMainNext -1978335180 0
+Check 'main: a failing exit code and nothing busy is failed' ($r -eq 'failed') $r
+$r = Get-WingetMainNext -1978335214 0
+Check 'main: winget failing before any package, such as a missing source, is failed' ($r -eq 'failed') $r
+$r = Get-WingetMainNext 1 0
+Check 'main: a small positive exit code is failed too' ($r -eq 'failed') $r
+$r = Get-WingetMainNext -1978335180 1
+Check 'main: a failing exit code with one busy package is check' ($r -eq 'check') $r
+$r = Get-WingetMainNext -1978335180 2
+Check 'main: a failing exit code with two busy packages is check' ($r -eq 'check') $r
+$r = Get-WingetMainNext 0 1
+Check 'main: exit code 0 is done whatever was read as busy' ($r -eq 'done') $r
+$r = Get-WingetMainNext -1978335180 @(Get-WingetBusyIds $run).Count
+Check 'main: the failed run of 2026-11-28, one busy package, is check' ($r -eq 'check') $r
 
 Write-Host ''
 Write-Host "$passed passed, $failed failed."
