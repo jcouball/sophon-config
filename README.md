@@ -1233,6 +1233,7 @@ winget-packages.json                  36 packages; read by script 01, never depl
 administrators_authorized_keys        public keys for SSH; read by script 11, never deployed
 sshd_config                           sshd's config; copied to C:\ProgramData\ssh by script 11
 
+dot_ssh/config                        ssh from sophon: a Host block for each other machine
 dot_config/powershell/profile.ps1     mise activation; the real profile
 dot_config/husky/init.sh              git hooks get mise on PATH
 dot_config/mise/config.toml           the eight pinned tools, and the hook that links a new Ruby
@@ -1588,6 +1589,35 @@ login without a commit to record it.
 - **Use stored credentials.** Expect `gh` and Git Credential Manager to fail
   inside a session; [Small gotchas](#small-gotchas) has the reason and the
   workaround.
+
+### Connecting from sophon to another machine
+
+sophon can open `neuromancer`, `cortex` and `rama` by name once it holds the
+key for that machine. The private keys are kept on the primary development
+machine, which is Neuromancer. sophon normally holds none, so `ssh rama` from
+sophon is refused until it is given the key.
+
+To give sophon the key for rama, copy it from Neuromancer:
+
+```sh
+scp ~/.ssh/id_ed25519_rama sophon:.ssh/
+```
+
+Then `ssh rama` on sophon connects. For another machine, use its name in place
+of `rama`. The key can stay on sophon for as long as sophon needs the
+connection. To take it away, delete the file.
+
+- **A key with a passphrase is asked for on every connection.** Nothing on
+  sophon keeps a key unlocked yet:
+  [#42](https://github.com/jcouball/windows-dev-config/issues/42). Someone has
+  to be there to type it, so a command run with nobody at the keyboard, or
+  over an ssh session with no terminal, cannot use such a key.
+- **The blocks use the tailnet names,** so Tailscale has to be running on
+  sophon and on the other machine.
+- **A machine's host key is trusted the first time it is seen.** The blocks
+  set `StrictHostKeyChecking accept-new`, which writes the key to
+  `known_hosts` and refuses a different one later. Without it the first
+  connection asks, and in an ssh session nobody can answer.
 
 ---
 

@@ -1,0 +1,48 @@
+# Outbound connections from sophon. Inbound access is
+# administrators_authorized_keys, in the source root.
+#
+# THE OTHER MACHINES. Each accepts one key, named for the machine it opens.
+# The private keys are kept on the primary development machine, which is
+# Neuromancer, so sophon normally holds none. To connect from sophon, put a
+# copy of the key at the path its block names. It can stay as long as sophon
+# needs the connection. The names are the ones the machines have on the
+# tailnet, so Tailscale has to be running at both ends.
+#
+# Nothing here keeps a key unlocked: a key with a passphrase is asked for on
+# every connection. Issue #42 is about changing that.
+#
+# accept-new: a machine's host key is trusted the first time it is seen and
+# written to known_hosts; a different key later is refused. Without it the
+# first connection asks, and over ssh nobody can answer.
+#
+# There is no Host * block. The deploy key's push names its own key and
+# options in core.sshCommand and is not affected by this file.
+
+Host neuromancer
+  HostName neuromancer
+  User james
+  IdentityFile ~/.ssh/id_ed25519_neuromancer
+  IdentitiesOnly yes
+  StrictHostKeyChecking accept-new
+  ForwardAgent no
+  # sshd on the Macs admits IPv4 addresses only, and a tailnet name has an
+  # IPv6 address too.
+  AddressFamily inet
+
+Host cortex
+  HostName cortex
+  User james
+  IdentityFile ~/.ssh/id_ed25519_cortex
+  IdentitiesOnly yes
+  StrictHostKeyChecking accept-new
+  ForwardAgent no
+  # As for neuromancer: IPv4 only.
+  AddressFamily inet
+
+Host rama
+  HostName rama
+  User james
+  IdentityFile ~/.ssh/id_ed25519_rama
+  IdentitiesOnly yes
+  StrictHostKeyChecking accept-new
+  ForwardAgent no
