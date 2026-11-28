@@ -260,7 +260,7 @@ gave. Read it before changing the script, and run those cases again.
 
 | Script | Pull requests |
 | --- | --- |
-| 01 `winget_install` | its manifest split: `tests\winget-install.tests.ps1`; the import itself: #41 |
+| 01 `winget_install` | its manifest split and its reading of winget's output: `tests\winget-install.tests.ps1`; the import itself: #41; importing again after a busy Windows Installer: #43 |
 | 04 `mise_install`, `mise-path.ps1`, the profile | #12 |
 | 05 `terminal_default_profile` | #7 |
 | 06 `ruby_toolchains`, `ruby-toolchains.ps1`, `ruby-toolchains-packages.sh` | #9, #21 |

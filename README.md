@@ -155,6 +155,17 @@ is in the manifest and not in that list is skipped by a rebuild, and
 `tests\winget-install.tests.ps1` does not catch that: it checks only that
 each name in the list is in the manifest.
 
+**A package whose installer finds Windows Installer busy is imported again.**
+Windows Installer runs one installation at a time, and an MSI started during
+another ends with exit code 1618. `winget import` then goes on to the next
+package. The other installation need not be winget's: winget counts the WSL
+package as installed once it is registered, and the package's service goes on
+installing `wsl.msi` for some seconds after. Script 01 reads winget's output
+for packages that ended with 1618, waits 30 seconds and imports those again
+one at a time, up to three times. If one is still not installed, because it
+was busy every time or because a later try failed some other way, it says
+which and exits 1, so the next `chezmoi apply` runs the script again.
+
 #### Uninstall an application
 
 ```powershell
